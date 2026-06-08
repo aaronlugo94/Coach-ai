@@ -1,0 +1,279 @@
+"""
+bot/handlers/menu.py — Menú principal y comandos.
+"""
+from __future__ import annotations
+import logging, os
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ContextTypes
+from db.database import (get_usuario, get_estado, has_plan, upsert_usuario,
+                          create_login_token, get_ultimo_pesaje, get_allowed_users)
+from bot.keyboards import TECLADO_PRINCIPAL, MENU_INLINE, BTN_MENU, kb_objetivos, kb_horario
+from engine.body.healthconnect import get_auth_url, esta_conectado
+import gamification
+
+logger = logging.getLogger(__name__)
+WEB_URL = os.environ.get("FRONTEND_URL","https://coach-ai.vercel.app")
+ADMIN   = int(os.environ.get("ADMIN_TELEGRAM_ID","0"))
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid    = update.effective_user.id
+    nombre = update.effective_user.first_name or ""
+    n      = nombre.split()[0] if nombre else "ahí"
+
+    if not has_plan(uid):
+        await update.message.reply_text(
+            f"Hola {n} 👋\n\n"
+            "<b>Coach</b> — tu entrenador y nutriólogo personal.\n\n"
+            "💪 Rutina de gym con progresión automática\n"
+            "⚖️ Análisis corporal desde tu báscula\n"
+            "🥗 Plan de nutrición semanal con IA\n\n"
+            "Setup en 2 minutos. ¿Cuál es tu objetivo?",
+            reply_markup=kb_objetivos(), parse_mode="HTML")
+        return
+
+    semana, dia = get_estado(uid)
+    racha = gamification.get_racha(uid)
+    racha_str = f"🔥 {racha} días de racha  ·  " if racha >= 3 else ""
+    pesaje = get_ultimo_pesaje(uid)
+    peso_str = f"⚖️ {pesaje['peso_kg']} kg" if pesaje else ""
+
+    await update.message.reply_text(
+        f"Hola {n} 👋  {racha_str}{peso_str}\n\n¿Qué hacemos? 👇",
+        reply_markup=TECLADO_PRINCIPAL, parse_mode="HTML")
+    await update.message.reply_text("Menú:", reply_markup=MENU_INLINE)
+
+
+async def cmd_reset_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "¿Qué quieres cambiar?",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💪 Nueva rutina de gym",  callback_data="rst:gym")],
+            [InlineKeyboardButton("🥗 Nuevo plan de dieta",  callback_data="rst:dieta")],
+            [InlineKeyboardButton("🔄 Los dos",              callback_data="rst:todo")],
+            [InlineKeyboardButton("❌ Cancelar",             callback_data="m:main")],
+        ]))
+
+
+async def cmd_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid   = update.effective_user.id
+    token = create_login_token(uid)
+    url   = f"{WEB_URL}/auth?token={token}"
+    await update.message.reply_text(
+        "Toca para entrar 👇\n<i>Válido 5 minutos.</i>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌐 Entrar", url=url)]]))
+
+
+async def cmd_conectar_fit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if esta_conectado(uid):
+        await update.message.reply_text(
+            "✅ Google Fit ya está conectado.\n\n"
+            "Los datos del OnePlus Watch 4 se sincronizan cada mañana automáticamente.")
+        return
+    url = get_auth_url(uid)
+    await update.message.reply_text(
+        "Conecta Google Fit para que el bot reciba:\n"
+        "👟 Pasos · 🔥 Calorías · 😴 Sueño · ❤️ Frecuencia cardíaca\n\n"
+        "Toca el botón y autoriza en Google 👇",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔗 Conectar Google Fit", url=url)
+        ]]))
+
+
+async def cmd_sethorario(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⏰ ¿A qué hora quieres tu recordatorio?",
+                                    reply_markup=kb_horario())
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "❓ <b>Comandos</b>\n\n"
+        "<code>/start</code> — Menú principal\n"
+        "<code>/login</code> — Web app\n"
+        "<code>/sethorario</code> — Cambiar recordatorio\n"
+        "<code>/reset_plan</code> — Nueva rutina o dieta\n"
+        "<code>/conectar_fit</code> — Conectar Google Fit",
+        parse_mode="HTML")
+
+
+async def cmd_adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN: return
+    if not context.args:
+        await update.message.reply_text("Uso: /adduser <id>"); return
+    from db.database import add_allowed_user
+    add_allowed_user(int(context.args[0]))
+    await update.message.reply_text(f"✅ {context.args[0]} agregado.")
+
+
+async def handle_menu(query, uid: int, context):
+    sub = query.data.split(":")[1]
+    if sub == "main":
+        u = get_usuario(uid)
+        nombre = u.get("nombre","") if u else ""
+        racha  = gamification.get_racha(uid)
+        racha_str = f"🔥 {racha} días de racha" if racha >= 3 else ""
+        try:
+            await query.edit_message_text(
+                f"{'Hola ' + nombre.split()[0] + ' 👋  ' if nombre else ''}{racha_str}\n\n¿Qué hacemos?",
+                reply_markup=MENU_INLINE, parse_mode="HTML")
+        except Exception: pass
+
+    elif sub == "hoy":
+        from bot.handlers.gym import handle_rutina_preview
+        semana, dia = get_estado(uid)
+        await handle_rutina_preview(uid, semana, dia, query=query)
+
+    elif sub == "cuerpo":
+        pesaje = get_ultimo_pesaje(uid)
+        if not pesaje:
+            try: await query.edit_message_text("⚖️ Sin pesajes aún.\nPésate en ayunas (6-9am).", reply_markup=BTN_MENU)
+            except Exception: pass
+            return
+        u       = get_usuario(uid) or {}
+        obj     = u.get("objetivo_vida","")
+        meta    = {"bajar_grasa":"🎯 Bajar grasa","ganar_musculo":"🎯 Ganar músculo",
+                   "recomposicion":"🎯 Recomposición","gluteo_pierna":"🎯 Glúteo y pierna",
+                   "salud":"🎯 Salud","competitivo":"🎯 Nivel competitivo"}.get(obj,"")
+        try:
+            await query.edit_message_text(
+                f"⚖️ <b>{pesaje['fecha']}</b>\n\n"
+                f"Peso: {pesaje['peso_kg']} kg\n"
+                f"Grasa: {pesaje.get('grasa_pct','—')}%  |  Músculo: {pesaje.get('musculo_pct','—')}%\n"
+                f"BMR medido: {pesaje.get('bmr_medido','—')} kcal"
+                f"{chr(10) + meta if meta else ''}",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🌐 Ver tendencia", url=f"{WEB_URL}/cuerpo")],
+                    [InlineKeyboardButton("🏠 Menú", callback_data="m:main")],
+                ]), parse_mode="HTML")
+        except Exception: pass
+
+    elif sub == "dieta":
+        from engine.nutrition.macros import calcular_macros_dia
+        semana, dia = get_estado(uid)
+        ejs = get_estado(uid)
+        from db.database import get_ejercicios_dia
+        es_gym = bool(get_ejercicios_dia(uid, *get_estado(uid)))
+        mac = calcular_macros_dia(uid, es_gym=es_gym)
+        if not mac:
+            try: await query.edit_message_text("🥗 Pésate para calcular tus macros.", reply_markup=BTN_MENU)
+            except Exception: pass
+            return
+        ajuste = mac.get("ajuste_siso",{})
+        ajuste_str = ""
+        if ajuste.get("accion") == "reducir":
+            ajuste_str = f"\n📉 Ajuste: -{ajuste['kcal']} kcal — {ajuste['razon']}"
+        elif ajuste.get("accion") == "subir":
+            ajuste_str = f"\n📈 Ajuste: +{ajuste['kcal']} kcal — {ajuste['razon']}"
+        refeed_str = "\n🔄 <b>Semana de refeed</b> — comes a mantenimiento esta semana." if mac.get("es_refeed") else ""
+        try:
+            await query.edit_message_text(
+                f"🥗 <b>{'Hoy — día de gym' if mac['es_gym'] else 'Hoy — día de descanso'}</b>\n\n"
+                f"🔥 {mac['kcal']} kcal\n"
+                f"🥩 {mac['proteina_g']}g proteína ({mac['toma_proteina']}g × 4 tomas)\n"
+                f"🍞 {mac['carbs_g']}g carbs  🥑 {mac['grasas_g']}g grasas"
+                f"{ajuste_str}{refeed_str}",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🌐 Ver plan completo", url=f"{WEB_URL}/nutricion")],
+                    [InlineKeyboardButton("🏠 Menú", callback_data="m:main")],
+                ]), parse_mode="HTML")
+        except Exception: pass
+
+    elif sub == "nuevo":
+        try:
+            await query.edit_message_text(
+                "¿Qué quieres cambiar?",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💪 Nueva rutina de gym",  callback_data="rst:gym")],
+                    [InlineKeyboardButton("🥗 Nuevo plan de dieta",  callback_data="rst:dieta")],
+                    [InlineKeyboardButton("🔄 Los dos",              callback_data="rst:todo")],
+                    [InlineKeyboardButton("❌ Cancelar",             callback_data="m:main")],
+                ]))
+        except Exception: pass
+
+
+async def handle_rst(query, uid: int, context):
+    tipo = query.data.split(":")[1]
+    if tipo in ("gym","todo"):
+        from db.database import insert_plan
+        context.user_data["solo_gym"] = (tipo == "gym")
+        try:
+            await query.edit_message_text(
+                "<b>¿Cuál es tu objetivo?</b>\n\nEl plan se ajusta completamente a esto:",
+                reply_markup=kb_objetivos(), parse_mode="HTML")
+        except Exception: pass
+    elif tipo == "dieta":
+        from bot.keyboards import kb_dieta
+        try:
+            await query.edit_message_text("🥗 <b>¿Cómo describes tu alimentación?</b>",
+                reply_markup=kb_dieta(), parse_mode="HTML")
+        except Exception: pass
+
+
+async def handle_horario(query, uid: int):
+    parts = query.data.split(":")
+    hora = None if parts[1] == "none" else f"{parts[1]}:{parts[2]}" if len(parts)>2 else parts[1]
+    upsert_usuario(uid, hora_reminder=hora)
+    msg = f"⏰ Recordatorio: <b>{hora}</b> ✅" if hora else "❌ Recordatorio desactivado"
+    try: await query.edit_message_text(msg, reply_markup=BTN_MENU, parse_mode="HTML")
+    except Exception: pass
+
+
+async def handler_texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid   = update.effective_user.id
+    texto = (update.message.text or "").strip()
+
+    BOTONES = {
+        "💪 Rutina de hoy": "hoy",
+        "⚖️ Mi cuerpo":     "cuerpo",
+        "🥗 Mi dieta":      "dieta",
+        "❓ Ayuda":         "ayuda",
+    }
+    if texto in BOTONES:
+        accion = BOTONES[texto]
+        if accion == "hoy":
+            from bot.handlers.gym import handle_rutina_preview
+            semana, dia = get_estado(uid)
+            await handle_rutina_preview(uid, semana, dia, msg=update.message)
+        elif accion == "cuerpo":
+            pesaje = get_ultimo_pesaje(uid)
+            if not pesaje:
+                await update.message.reply_text("⚖️ Sin pesajes aún. Pésate en ayunas.")
+            else:
+                await update.message.reply_text(
+                    f"⚖️ {pesaje['fecha']}\nPeso: {pesaje['peso_kg']} kg",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🌐 Ver tendencia", url=f"{WEB_URL}/cuerpo")
+                    ]]))
+        elif accion == "dieta":
+            from engine.nutrition.macros import calcular_macros_dia
+            from db.database import get_ejercicios_dia
+            es_gym = bool(get_ejercicios_dia(uid, *get_estado(uid)))
+            mac = calcular_macros_dia(uid, es_gym=es_gym)
+            if not mac:
+                await update.message.reply_text("🥗 Pésate para calcular tus macros.")
+            else:
+                await update.message.reply_text(
+                    f"🥗 {mac['kcal']} kcal  🥩 {mac['proteina_g']}g  "
+                    f"🍞 {mac['carbs_g']}g  🥑 {mac['grasas_g']}g")
+        elif accion == "ayuda":
+            await update.message.reply_text(
+                "/start /login /sethorario /reset_plan /conectar_fit")
+        return
+
+    step = context.user_data.get("ob_step")
+    if step == "datos":
+        from bot.handlers.onboarding import handle_datos_texto
+        await handle_datos_texto(uid, texto, update, context)
+        return
+    if step == "restriccion_otra":
+        context.user_data["rest_extra"] = texto.strip()
+        context.user_data["ob_step"] = None
+        from bot.keyboards import kb_restricciones
+        sel = context.user_data.get("rest_sel", set())
+        await update.message.reply_text(
+            f"✅ Anotado: {texto.strip()}\n\nSelecciona más o confirma:",
+            reply_markup=kb_restricciones(sel))
+        return
+
+    await update.message.reply_text("Usa los botones 👇", reply_markup=TECLADO_PRINCIPAL)
