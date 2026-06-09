@@ -309,3 +309,16 @@ def verify_login_token(token: str) -> int | None:
     if datetime.utcnow() - created > timedelta(minutes=5): return None
     execute("UPDATE login_tokens SET usado=1 WHERE token=?", (token,))
     return r["user_id"]
+
+
+def get_plan_nutricion_activo(uid: int) -> dict | None:
+    return fetchone(
+        "SELECT * FROM planes_nutricion WHERE user_id=? ORDER BY generado_at DESC LIMIT 1",
+        (uid,)
+    )
+
+def get_analisis_historial(uid: int, limit: int = 7) -> list[dict]:
+    return fetchall(
+        "SELECT tipo, texto, fecha FROM analisis WHERE user_id=? ORDER BY fecha DESC LIMIT ?",
+        (uid, limit)
+    )
