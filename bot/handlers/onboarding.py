@@ -50,23 +50,45 @@ async def handle_ob(query, uid: int, context):
 
 
 async def handle_datos_texto(uid: int, texto: str, update: Update, context):
-    """Parser de datos físicos desde texto libre."""
-    texto_l = texto.lower()
-    sexo = ("hombre" if any(x in texto_l for x in ["hombre","masculino","male"])
-            else "mujer" if any(x in texto_l for x in ["mujer","femenino","female"])
+    """Parser de datos físicos. Acepta cualquier formato."""
+    texto_l = texto.lower().strip()
+
+    # Sexo
+    sexo = ("hombre" if any(x in texto_l for x in ["hombre","masculino","male","m ","m,"])
+            else "mujer" if any(x in texto_l for x in ["mujer","femenino","female","f ","f,"])
             else None)
-    nums = re.findall(r'(\d+(?:[.,]\d+)?)\s*(kg|kgs|lbs|lb|cm|años|año)?', texto_l)
+
+    # Palabras → remover para no confundir el parser numérico
+    texto_limpio = texto_l
+    for w in ["anos","años","año","ano","kg","kgs","lbs","lb","cm","m ","hombre","mujer",
+              "masculino","femenino","male","female","kilos","kilo","metros","metro"]:
+        texto_limpio = texto_limpio.replace(w, " ")
+
+    # Extraer todos los números
+    import re as _re
+    raw_nums = re.findall(r'\d+(?:[.,]\d+)?', texto_l)
+    nums_vals = []
+    for n in raw_nums:
+        try: nums_vals.append(float(n.replace(",",".")))
+        except: pass
+
     edad = peso = altura = None
-    for val_s, unit in nums:
+
+    # Parser con unidades explícitas primero
+    for val_s, unit in re.findall(r'(\d+(?:[.,]\d+)?)\s*(kg|kgs|lbs|lb|cm|años|año|anos|ano)?', texto_l):
         val = float(val_s.replace(",","."))
-        if unit in ("kg","kgs") or (not unit and 30 <= val <= 300 and not peso):
-            if 30 <= val <= 300: peso = val
-        elif unit in ("lbs","lb"):
-            peso = round(val * 0.453592, 1)
-        elif unit == "cm" or (not unit and 130 <= val <= 230 and not altura):
-            if 130 <= val <= 230: altura = val
-        elif unit in ("años","año") or (not unit and 10 <= val <= 100 and not edad):
-            if 10 <= val <= 100: edad = int(val)
+        if unit in ("kg","kgs") and 30 <= val <= 300: peso = val
+        elif unit in ("lbs","lb"): peso = round(val*0.453592,1)
+        elif unit == "cm" and 100 <= val <= 250: altura = val
+        elif unit in ("años","año","anos","ano") and 10 <= val <= 100: edad = int(val)
+
+    # Fallback — ordenar y asignar por rangos típicos
+    if not all([edad, peso, altura]):
+        nums_sorted = sorted([float(n.replace(",",".")) for n in re.findall(r'\d+(?:[.,]\d+)?', texto_l)])
+        for val in nums_sorted:
+            if 150 <= val <= 220 and not altura: altura = val
+            elif 50 <= val <= 200 and not peso and val != altura: peso = val
+            elif 10 <= val <= 80 and not edad and val != peso and val != altura: edad = int(val)
 
     kw = {}
     if edad:   kw["edad"] = edad
