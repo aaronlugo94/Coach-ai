@@ -22,16 +22,31 @@ FRONTEND_URL   = os.environ.get("FRONTEND_URL","https://coach-ai.vercel.app")
 app  = FastAPI(title="Invisible Coach", docs_url=None, redoc_url=None)
 _bot: Application | None = None
 
+# CORS — debe estar ANTES del router
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],
 )
 
 app.include_router(router)
+
+# Explicit OPTIONS handler para preflight requests
+from fastapi import Request
+from fastapi.responses import Response
+
+@app.options("/{rest_of_path:path}")
+async def preflight_handler(request: Request, rest_of_path: str):
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin":  "*",
+            "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
 
 
 @app.on_event("startup")
