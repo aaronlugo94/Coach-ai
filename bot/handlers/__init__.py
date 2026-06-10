@@ -15,6 +15,7 @@ from .onboarding import (
     handle_sueño_hab, handle_trabajo, handle_estres, handle_wear,
 )
 from .gym import handle_ej_start, handle_pw, handle_ej_ok, handle_fb, handle_sue, handle_skip
+from .checkin import handle_ci
 import logging
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,9 @@ async def callback_router(update, context):
         elif data.startswith("fb:"):         await handle_fb(query, uid)
         elif data.startswith("sue:"):        await handle_sue(query, uid)
         elif data.startswith("skip:"):       await handle_skip(query, uid)
+
+        # ── Check-in nocturno ─────────────────────────────────────────────
+        elif data.startswith("ci:"):          await handle_ci(query, uid, context)
 
         else:
             logger.debug("Callback no manejado: %s", data)
