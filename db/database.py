@@ -1,12 +1,21 @@
+"""
+db/database.py — Invisible Coach v2.0
+Incluye modelo Fitness-Fatiga de Bannister (1975).
+Compatible con DB existente — migraciones seguras.
+"""
 from __future__ import annotations
-import json, logging, os, sqlite3, secrets
+import json, logging, math, os, secrets, sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
+logger  = logging.getLogger(__name__)
 DB_PATH = os.environ.get("DB_PATH", "/app/data/coach.db")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CONEXIÓN
+# ══════════════════════════════════════════════════════════════════════════════
 
 @contextmanager
 def get_db():
@@ -24,12 +33,6 @@ def get_db():
     finally:
         conn.close()
 
-def init_db():
-    schema = Path(__file__).parent / "schema.sql"
-    with get_db() as conn:
-        conn.executescript(schema.read_text())
-    logger.info("DB lista: %s", DB_PATH)
-
 def execute(sql: str, params: tuple = ()):
     with get_db() as conn:
         conn.execute(sql, params)
@@ -43,7 +46,43 @@ def fetchall(sql: str, params: tuple = ()) -> list[dict]:
     with get_db() as conn:
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
-# ── USUARIOS ──────────────────────────────────────────────────────────────────
+def init_db():
+    """Inicializa schema y corre migraciones seguras."""
+    schema = Path(__file__).parent / "schema.sql"
+    with get_db() as conn:
+        conn.executescript(schema.read_text())
+    _run_migrations()
+    logger.info("DB lista: %s", DB_PATH)
+
+def _run_migrations():
+    """
+    Agrega columnas nuevas a tablas existentes sin romper datos.
+    SQLite no soporta IF NOT EXISTS en ALTER TABLE — usamos try/except.
+    """
+    nuevas_columnas = [
+        ("usuarios", "fitness_score",   "REAL DEFAULT 0.0"),
+        ("usuarios", "fatiga_score",    "REAL DEFAULT 0.0"),
+        ("usuarios", "performance",     "REAL DEFAULT 0.0"),
+        ("usuarios", "hrv_baseline",    "REAL"),
+        ("usuarios", "rhr_baseline",    "REAL"),
+        ("usuarios", "fatiga_snc",      "INTEGER DEFAULT 0"),
+        ("usuarios", "semanas_deficit", "INTEGER DEFAULT 0"),
+        ("sesiones", "carga_entreno",   "REAL DEFAULT 0.0"),
+        ("actividad_diaria", "zona_fc_predominante", "INTEGER DEFAULT 1"),
+        ("actividad_diaria", "rer_estimado",          "REAL"),
+    ]
+    with get_db() as conn:
+        for tabla, col, tipo in nuevas_columnas:
+            try:
+                conn.execute(f"ALTER TABLE {tabla} ADD COLUMN {col} {tipo}")
+                logger.info("Migración: %s.%s añadida", tabla, col)
+            except Exception:
+                pass  # Columna ya existe — OK
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# USUARIOS
+# ══════════════════════════════════════════════════════════════════════════════
 
 def get_allowed_users() -> set[int]:
     return {r["user_id"] for r in fetchall("SELECT user_id FROM usuarios_permitidos", ())}
@@ -61,6 +100,8 @@ def upsert_usuario(uid: int, **kw):
         "hora_reminder","tipo_dieta","alergias","cocina","patron_comidas","ventana_comida",
         "donde_come","suplementos","alcohol","google_fit_token","renpho_email",
         "renpho_password","ciclo_actual","onboarding_done","sueño_horas",
+        "fitness_score","fatiga_score","performance","hrv_baseline","rhr_baseline",
+        "fatiga_snc","semanas_deficit",
     }
     kw = {k: v for k, v in kw.items() if k in COLS}
     if not kw: return
@@ -79,7 +120,251 @@ def has_plan(uid: int) -> bool:
     r = fetchone("SELECT COUNT(*) n FROM rutinas WHERE user_id=? AND ciclo=?", (uid, ciclo))
     return (r["n"] if r else 0) > 0
 
-# ── ESTADO ────────────────────────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MODELO FITNESS-FATIGA (Bannister 1975)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Constantes del modelo
+TAU_FITNESS = 42.0   # días — tiempo de decaimiento del fitness
+TAU_FATIGA  = 7.0    # días — tiempo de decaimiento de la fatiga
+K_FITNESS   = 1.0    # factor de ganancia fitness (calibrable)
+K_FATIGA    = 2.0    # factor de ganancia fatiga (mayor impacto inmediato)
+
+# HRV/RHR: umbrales para detectar fatiga SNC
+HRV_UMBRAL  = 0.85   # si HRV < baseline × 0.85 → posible fatiga SNC
+RHR_UMBRAL  = 1.10   # si RHR > baseline × 1.10 → posible fatiga SNC
+DIAS_SNC    = 2      # días consecutivos bajo umbral → fatiga SNC confirmada
+
+
+def calcular_carga_entreno(uid: int, semana: int, dia: str) -> float:
+    """
+    Calcula la carga de entrenamiento del día (w_t).
+    w_t = series_totales × (10 - rir_promedio) / 10
+    Escala 0-10: 0 = descanso, 10 = sesión al máximo esfuerzo.
+    """
+    ejs = get_ejercicios_dia(uid, semana, dia)
+    if not ejs:
+        return 0.0
+    fuerza = [e for e in ejs if not e.get("es_cardio")]
+    if not fuerza:
+        return 0.5  # solo cardio = carga mínima
+
+    series_total = sum(e.get("series", 3) for e in fuerza)
+    rir_obj      = sum(e.get("rir_objetivo", 2) for e in fuerza) / len(fuerza)
+    intensidad   = (10 - rir_obj) / 10  # RIR 0 = 100% intensidad, RIR 4 = 60%
+
+    # Normalizar: 20 series a RIR 1 = carga 10
+    carga = (series_total / 20) * intensidad * 10
+    return round(min(carga, 10.0), 2)
+
+
+def actualizar_bannister(uid: int, fecha_str: str = None):
+    """
+    Actualiza el modelo Fitness-Fatiga para el usuario.
+    Llamar después de cada sesión completada.
+
+    Bannister (1975):
+      Fitness(t) = Fitness(t-1) × e^(-1/τ₁) + K₁ × w(t)
+      Fatiga(t)  = Fatiga(t-1) × e^(-1/τ₂) + K₂ × w(t)
+      Performance(t) = Fitness(t) - Fatiga(t)
+    """
+    if fecha_str is None:
+        fecha_str = str(date.today())
+
+    u = get_usuario(uid)
+    if not u:
+        return
+
+    # Estado previo
+    fitness_prev = float(u.get("fitness_score") or 0)
+    fatiga_prev  = float(u.get("fatiga_score") or 0)
+
+    # Carga del día
+    semana, dia = get_estado(uid)
+    carga = calcular_carga_entreno(uid, semana, dia)
+
+    # Decaimiento exponencial + ganancia del día
+    decay_f = math.exp(-1 / TAU_FITNESS)
+    decay_g = math.exp(-1 / TAU_FATIGA)
+
+    fitness_new = fitness_prev * decay_f + K_FITNESS * carga
+    fatiga_new  = fatiga_prev  * decay_g + K_FATIGA  * carga
+    perf_new    = fitness_new - fatiga_new
+
+    # Datos biométricos del día para el registro
+    activ = get_actividad_dia(uid, fecha_str)
+    hrv   = activ.get("hrv_promedio")   if activ else None
+    rhr   = activ.get("fc_reposo")      if activ else None
+    sueño = activ.get("sueño_total_min",0) / 60 if activ else None
+
+    # Detectar fatiga SNC
+    fatiga_snc = _detectar_fatiga_snc(uid, hrv, rhr)
+
+    # Guardar en bannister_diario
+    execute("""
+        INSERT INTO bannister_diario
+        (user_id, fecha, carga, fitness, fatiga, performance,
+         hrv, fc_reposo, sueño_horas, fatiga_snc)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(user_id, fecha) DO UPDATE SET
+        carga=excluded.carga, fitness=excluded.fitness,
+        fatiga=excluded.fatiga, performance=excluded.performance,
+        hrv=excluded.hrv, fc_reposo=excluded.fc_reposo,
+        sueño_horas=excluded.sueño_horas, fatiga_snc=excluded.fatiga_snc
+    """, (uid, fecha_str, carga, fitness_new, fatiga_new, perf_new,
+          hrv, rhr, sueño, 1 if fatiga_snc else 0))
+
+    # Actualizar resumen en usuarios
+    upsert_usuario(uid,
+        fitness_score=round(fitness_new, 3),
+        fatiga_score=round(fatiga_new, 3),
+        performance=round(perf_new, 3),
+        fatiga_snc=1 if fatiga_snc else 0,
+    )
+
+    logger.info(
+        "Bannister uid=%s: carga=%.1f fitness=%.2f fatiga=%.2f perf=%.2f snc=%s",
+        uid, carga, fitness_new, fatiga_new, perf_new, fatiga_snc
+    )
+    return {
+        "carga": carga,
+        "fitness": round(fitness_new, 2),
+        "fatiga": round(fatiga_new, 2),
+        "performance": round(perf_new, 2),
+        "fatiga_snc": fatiga_snc,
+    }
+
+
+def _detectar_fatiga_snc(uid: int, hrv_hoy: float, rhr_hoy: float) -> bool:
+    """
+    Detecta fatiga del SNC usando HRV y FC reposo.
+    Condición: HRV < baseline×0.85 Y/O RHR > baseline×1.10
+    durante DIAS_SNC días consecutivos.
+    """
+    u = get_usuario(uid)
+    if not u:
+        return False
+
+    hrv_base = u.get("hrv_baseline")
+    rhr_base = u.get("rhr_baseline")
+
+    if not hrv_base and not rhr_base:
+        return False  # Sin baseline todavía
+
+    señales_hoy = 0
+    if hrv_base and hrv_hoy and hrv_hoy < hrv_base * HRV_UMBRAL:
+        señales_hoy += 1
+    if rhr_base and rhr_hoy and rhr_hoy > rhr_base * RHR_UMBRAL:
+        señales_hoy += 1
+
+    if señales_hoy == 0:
+        return False
+
+    # Verificar días consecutivos
+    dias_recientes = fetchall("""
+        SELECT fatiga_snc FROM bannister_diario
+        WHERE user_id=? ORDER BY fecha DESC LIMIT ?
+    """, (uid, DIAS_SNC))
+
+    consecutivos = sum(1 for d in dias_recientes if d.get("fatiga_snc") == 1)
+    return consecutivos >= DIAS_SNC - 1  # hoy + DIAS_SNC-1 anteriores
+
+
+def actualizar_baseline_hrv(uid: int):
+    """
+    Actualiza el baseline de HRV y RHR usando el promedio de 30 días.
+    Llamar cada mañana después del sync de Google Fit.
+    """
+    rows = fetchall("""
+        SELECT hrv_promedio, fc_reposo FROM actividad_diaria
+        WHERE user_id=? AND hrv_promedio IS NOT NULL
+        ORDER BY fecha DESC LIMIT 30
+    """, (uid,))
+
+    if len(rows) < 7:
+        return  # Necesitamos al menos 7 días para un baseline confiable
+
+    hrv_vals = [r["hrv_promedio"] for r in rows if r.get("hrv_promedio")]
+    rhr_vals = [r["fc_reposo"]    for r in rows if r.get("fc_reposo")]
+
+    kw = {}
+    if hrv_vals:
+        kw["hrv_baseline"] = round(sum(hrv_vals) / len(hrv_vals), 1)
+    if rhr_vals:
+        kw["rhr_baseline"] = round(sum(rhr_vals) / len(rhr_vals), 1)
+
+    if kw:
+        upsert_usuario(uid, **kw)
+        logger.info("Baseline HRV uid=%s: %s", uid, kw)
+
+
+def get_estado_bannister(uid: int) -> dict:
+    """
+    Retorna el estado actual del modelo para el usuario.
+    Usado por Gemini en el análisis matutino.
+    """
+    u = get_usuario(uid)
+    if not u:
+        return {}
+
+    fitness = float(u.get("fitness_score") or 0)
+    fatiga  = float(u.get("fatiga_score")  or 0)
+    perf    = float(u.get("performance")   or 0)
+
+    # Porcentaje de recuperación del SNC (0-100%)
+    if u.get("hrv_baseline") and u.get("hrv_baseline") > 0:
+        ultimo_activ = get_actividad_dia(uid, str(date.today() - timedelta(days=1)))
+        hrv_hoy = ultimo_activ.get("hrv_promedio") if ultimo_activ else None
+        if hrv_hoy:
+            snc_pct = min(100, round((hrv_hoy / u["hrv_baseline"]) * 100))
+        else:
+            snc_pct = 85  # default optimista sin datos
+    else:
+        snc_pct = 85
+
+    # Recomendación de volumen basada en Performance
+    if u.get("fatiga_snc"):
+        rec_volumen = "deload"          # SNC fatigado → deload automático
+    elif perf < -2:
+        rec_volumen = "reducir"         # Alta fatiga acumulada
+    elif perf > 3:
+        rec_volumen = "mantener_max"    # Fitness alto, fatiga baja → explotar
+    else:
+        rec_volumen = "normal"
+
+    return {
+        "fitness":        round(fitness, 2),
+        "fatiga":         round(fatiga, 2),
+        "performance":    round(perf, 2),
+        "snc_pct":        snc_pct,
+        "fatiga_snc":     bool(u.get("fatiga_snc")),
+        "hrv_baseline":   u.get("hrv_baseline"),
+        "rec_volumen":    rec_volumen,
+    }
+
+
+def get_volumen_ajustado(uid: int, series_base: int) -> int:
+    """
+    Ajusta el volumen de entrenamiento según el estado Bannister.
+    Usado por el planner para adaptar las series del día.
+    """
+    estado = get_estado_bannister(uid)
+    rec = estado.get("rec_volumen", "normal")
+
+    multiplicadores = {
+        "deload":      0.60,   # Fatiga SNC → -40% volumen
+        "reducir":     0.80,   # Performance negativa → -20%
+        "normal":      1.00,   # Normal
+        "mantener_max":1.00,   # No subir más allá del plan
+    }
+    mult = multiplicadores.get(rec, 1.0)
+    return max(1, round(series_base * mult))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ESTADO DEL PLAN
+# ══════════════════════════════════════════════════════════════════════════════
 
 def get_estado(uid: int) -> tuple[int, str]:
     r = fetchone("SELECT semana, dia FROM estado_plan WHERE user_id=?", (uid,))
@@ -88,7 +373,8 @@ def get_estado(uid: int) -> tuple[int, str]:
 def set_estado(uid: int, semana: int, dia: str):
     execute(
         "INSERT INTO estado_plan (user_id,semana,dia) VALUES (?,?,?) "
-        "ON CONFLICT(user_id) DO UPDATE SET semana=excluded.semana,dia=excluded.dia,updated_at=datetime('now')",
+        "ON CONFLICT(user_id) DO UPDATE SET semana=excluded.semana,"
+        "dia=excluded.dia,updated_at=datetime('now')",
         (uid, semana, dia),
     )
 
@@ -105,8 +391,10 @@ def avanzar_dia(uid: int, semana: int, dia: str) -> tuple[int, str]:
     if not dias: return semana, dia
     try: idx = dias.index(dia)
     except ValueError: idx = -1
+
     if idx + 1 < len(dias):
         return semana, dias[idx + 1]
+
     nueva = semana + 1 if semana < 4 else 1
     if nueva == 1:
         execute("UPDATE usuarios SET ciclo_actual=ciclo_actual+1 WHERE user_id=?", (uid,))
@@ -117,7 +405,10 @@ def avanzar_dia(uid: int, semana: int, dia: str) -> tuple[int, str]:
     )]
     return nueva, (nuevos[0] if nuevos else "lunes")
 
-# ── RUTINAS ───────────────────────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════════════════
+# RUTINAS
+# ══════════════════════════════════════════════════════════════════════════════
 
 def get_ejercicios_dia(uid: int, semana: int, dia: str) -> list[dict]:
     return fetchall(
@@ -153,7 +444,15 @@ def marcar_completado(uid: int, semana: int, dia: str):
         (uid, get_ciclo(uid), semana, dia)
     )
 
-# ── PESOS ─────────────────────────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PESOS (doble progresión)
+# ══════════════════════════════════════════════════════════════════════════════
+
+COMPUESTOS = {
+    "sentadilla","press_horizontal","press_inclinado","press_vertical",
+    "bisagra_cadera","remo_horizontal","jalon_vertical","peso_muerto",
+}
 
 def save_peso(uid: int, ejercicio_id: str, semana: int, dia: str,
               peso_lbs: float, reps: str = None, series: int = None, rir: int = None):
@@ -172,29 +471,43 @@ def get_historial_peso(uid: int, ejercicio_id: str, limit: int = 4) -> list[dict
 
 def get_peso_sugerido(uid: int, ejercicio_id: str,
                       reps_obj: str = "8-10", patron: str = "") -> float | None:
+    """
+    Doble progresión (Schoenfeld 2021):
+    Sube peso cuando el usuario llega al límite superior de reps
+    en 2 sesiones consecutivas.
+    """
     hist = get_historial_peso(uid, ejercicio_id, 4)
-    if not hist: return None
+    if not hist:
+        return None
+
     peso = float(hist[0]["peso_lbs"])
-    COMPUESTOS = {"sentadilla","press_horizontal","press_inclinado","press_vertical",
-                  "bisagra_cadera","remo_horizontal","jalon_vertical","peso_muerto"}
-    inc = 5.0 if patron in COMPUESTOS else 2.5
+    inc  = 5.0 if patron in COMPUESTOS else 2.5
+
     try:
         rep_max = int(reps_obj.split("-")[-1].replace("+",""))
     except Exception:
         rep_max = 10
+
+    # ¿Llegó al tope 2 veces seguidas?
     recientes = []
     for h in hist[:2]:
         r = h.get("reps_completadas","")
         try: recientes.append(int(str(r).split("-")[0]))
         except Exception: pass
+
     if len(recientes) >= 2 and all(r >= rep_max for r in recientes):
         return round(peso + inc, 1)
+
     return round(peso, 1)
 
-# ── SESIONES ──────────────────────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SESIONES
+# ══════════════════════════════════════════════════════════════════════════════
 
 def save_sesion(uid: int, semana: int, dia: str, **kw):
-    COLS = {"grupo","completada","fatiga_global","rir_promedio","sueño_horas","duracion_min"}
+    COLS = {"grupo","completada","fatiga_global","rir_promedio",
+            "sueño_horas","duracion_min","carga_entreno"}
     kw = {k: v for k, v in kw.items() if k in COLS}
     cols = ", ".join(kw.keys())
     vals = ", ".join("?" * len(kw))
@@ -203,7 +516,10 @@ def save_sesion(uid: int, semana: int, dia: str, **kw):
         (uid, get_ciclo(uid), semana, dia, *kw.values())
     )
 
-# ── PESAJES ───────────────────────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PESAJES (Renpho)
+# ══════════════════════════════════════════════════════════════════════════════
 
 def save_pesaje(uid: int, datos: dict) -> bool:
     ts = datos.get("Timestamp")
@@ -221,7 +537,9 @@ def save_pesaje(uid: int, datos: dict) -> bool:
     return True
 
 def get_ultimo_pesaje(uid: int) -> dict | None:
-    return fetchone("SELECT * FROM pesajes WHERE user_id=? ORDER BY fecha DESC LIMIT 1", (uid,))
+    return fetchone(
+        "SELECT * FROM pesajes WHERE user_id=? ORDER BY fecha DESC LIMIT 1", (uid,)
+    )
 
 def get_pesajes_recientes(uid: int, dias: int = 21) -> list[dict]:
     return fetchall(
@@ -229,23 +547,42 @@ def get_pesajes_recientes(uid: int, dias: int = 21) -> list[dict]:
         "WHERE user_id=? ORDER BY fecha DESC LIMIT ?", (uid, dias)
     )
 
-# ── ACTIVIDAD (Google Fit) ────────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ACTIVIDAD DIARIA (Google Fit)
+# ══════════════════════════════════════════════════════════════════════════════
 
 def save_actividad(uid: int, fecha: str, datos: dict):
-    execute(
-        "INSERT INTO actividad_diaria (user_id,fecha,pasos,calorias_activas,"
-        "minutos_actividad,distancia_km,hrv_promedio,fc_reposo,sueño_total_min,"
-        "sueño_profundo_min,sueño_rem_min,sueño_ligero_min,fuente) VALUES "
-        "(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,fecha) DO UPDATE SET "
-        "pasos=excluded.pasos, calorias_activas=excluded.calorias_activas,"
-        "hrv_promedio=excluded.hrv_promedio, sueño_total_min=excluded.sueño_total_min,"
-        "sueño_profundo_min=excluded.sueño_profundo_min, sueño_rem_min=excluded.sueño_rem_min",
-        (uid, fecha, datos.get("pasos",0), datos.get("calorias_activas",0),
-         datos.get("minutos_actividad",0), datos.get("distancia_km",0),
-         datos.get("hrv_promedio"), datos.get("fc_reposo"),
-         datos.get("sueño_total_min"), datos.get("sueño_profundo_min"),
-         datos.get("sueño_rem_min"), datos.get("sueño_ligero_min"),
-         datos.get("fuente","google_fit"))
+    execute("""
+        INSERT INTO actividad_diaria
+        (user_id, fecha, pasos, calorias_activas, minutos_actividad, distancia_km,
+         hrv_promedio, fc_reposo, sueño_total_min, sueño_profundo_min,
+         sueño_rem_min, sueño_ligero_min, zona_fc_predominante, rer_estimado, fuente)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(user_id, fecha) DO UPDATE SET
+        pasos=excluded.pasos, calorias_activas=excluded.calorias_activas,
+        hrv_promedio=excluded.hrv_promedio, fc_reposo=excluded.fc_reposo,
+        sueño_total_min=excluded.sueño_total_min,
+        sueño_profundo_min=excluded.sueño_profundo_min,
+        sueño_rem_min=excluded.sueño_rem_min,
+        zona_fc_predominante=excluded.zona_fc_predominante,
+        rer_estimado=excluded.rer_estimado
+    """, (
+        uid, fecha,
+        datos.get("pasos", 0), datos.get("calorias_activas", 0),
+        datos.get("minutos_actividad", 0), datos.get("distancia_km", 0),
+        datos.get("hrv_promedio"), datos.get("fc_reposo"),
+        datos.get("sueño_total_min"), datos.get("sueño_profundo_min"),
+        datos.get("sueño_rem_min"), datos.get("sueño_ligero_min"),
+        datos.get("zona_fc_predominante", 1), datos.get("rer_estimado"),
+        datos.get("fuente", "google_fit"),
+    ))
+
+def get_actividad_dia(uid: int, fecha: str = None) -> dict | None:
+    if fecha is None:
+        fecha = str(date.today() - timedelta(days=1))
+    return fetchone(
+        "SELECT * FROM actividad_diaria WHERE user_id=? AND fecha=?", (uid, fecha)
     )
 
 def get_actividad_semana(uid: int, dias: int = 7) -> list[dict]:
@@ -254,61 +591,80 @@ def get_actividad_semana(uid: int, dias: int = 7) -> list[dict]:
         (uid, dias)
     )
 
-# ── NUTRICIÓN ─────────────────────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NUTRICIÓN (SISO + Refeed)
+# ══════════════════════════════════════════════════════════════════════════════
 
 def calcular_ajuste_calorico(uid: int) -> dict:
+    """
+    SISO: ajuste calórico basado en cambio de peso real vs meta.
+    Meta bajar grasa: -0.5% del peso/semana
+    Meta lean bulk:   +0.3% del peso/semana
+    """
     u = get_usuario(uid)
-    if not u: return {"accion":"mantener","kcal":0,"razon":"sin perfil"}
-    obj = u.get("objetivo_gym","general")
-    metas = {"peso":(-0.006,"bajar"),"mamado":(0.003,"subir"),
-             "gluteo":(-0.003,"bajar"),"general":(0.0,"mantener")}
-    meta_pct, dir_ = metas.get(obj,(0.0,"mantener"))
+    if not u:
+        return {"accion": "mantener", "kcal": 0, "razon": "sin perfil"}
+
+    obj = u.get("objetivo_gym", "general")
+    metas = {
+        "peso":    (-0.005, "bajar"),
+        "mamado":  ( 0.003, "subir"),
+        "gluteo":  (-0.003, "bajar"),
+        "general": ( 0.0,   "mantener"),
+    }
+    meta_pct, dir_ = metas.get(obj, (0.0, "mantener"))
+
     if dir_ == "mantener":
-        return {"accion":"mantener","kcal":0,"razon":"recomposición — calorías estables"}
-    pesos = [float(p["peso_kg"]) for p in get_pesajes_recientes(uid,21) if p.get("peso_kg")]
+        return {"accion": "mantener", "kcal": 0, "razon": "recomposición — calorías estables"}
+
+    pesos = [float(p["peso_kg"]) for p in get_pesajes_recientes(uid, 21) if p.get("peso_kg")]
     if len(pesos) < 7:
-        return {"accion":"mantener","kcal":0,"razon":f"necesito más datos ({len(pesos)}/7 pesajes)"}
-    sem_rec = sum(pesos[:7])/7
-    sem_ant = sum(pesos[7:14])/len(pesos[7:14]) if len(pesos)>=14 else pesos[-1]
-    cambio = sem_rec - sem_ant
+        return {"accion": "mantener", "kcal": 0, "razon": f"faltan datos ({len(pesos)}/7 pesajes)"}
+
+    sem_rec = sum(pesos[:7]) / 7
+    sem_ant = sum(pesos[7:14]) / len(pesos[7:14]) if len(pesos) >= 14 else pesos[-1]
+    cambio  = sem_rec - sem_ant
     meta_kg = sem_ant * abs(meta_pct)
+
     if dir_ == "bajar":
-        if cambio > -0.1: return {"accion":"reducir","kcal":200,"razon":f"bajaste {abs(cambio):.2f}kg, meta {meta_kg:.2f}kg"}
-        if cambio < -(meta_kg*2): return {"accion":"subir","kcal":150,"razon":f"bajaste {abs(cambio):.2f}kg — muy rápido"}
-        return {"accion":"mantener","kcal":0,"razon":f"bajaste {abs(cambio):.2f}kg ✅"}
+        if cambio > -0.1:
+            return {"accion": "reducir", "kcal": 200,
+                    "razon": f"bajaste {abs(cambio):.2f}kg, meta {meta_kg:.2f}kg/sem"}
+        if cambio < -(meta_kg * 2):
+            return {"accion": "subir", "kcal": 150,
+                    "razon": f"bajaste {abs(cambio):.2f}kg — muy rápido, protege músculo"}
+        return {"accion": "mantener", "kcal": 0,
+                "razon": f"bajaste {abs(cambio):.2f}kg — en meta ✅"}
     else:
-        if cambio < 0.05: return {"accion":"subir","kcal":150,"razon":"necesitas más calorías para crecer"}
-        if cambio > meta_kg*2: return {"accion":"reducir","kcal":100,"razon":"lean bulk muy rápido"}
-        return {"accion":"mantener","kcal":0,"razon":f"subiste {cambio:.2f}kg ✅"}
+        if cambio < 0.05:
+            return {"accion": "subir", "kcal": 150,
+                    "razon": "necesitas más calorías para crecer"}
+        if cambio > meta_kg * 2:
+            return {"accion": "reducir", "kcal": 100,
+                    "razon": "lean bulk muy rápido — reduce para evitar grasa"}
+        return {"accion": "mantener", "kcal": 0,
+                "razon": f"subiste {cambio:.2f}kg — lean bulk perfecto ✅"}
+
 
 def necesita_refeed(uid: int) -> bool:
-    pesos = [float(p["peso_kg"]) for p in get_pesajes_recientes(uid,35) if p.get("peso_kg")]
-    if len(pesos) < 21: return False
+    """
+    Refeed automático: 3+ semanas consecutivas en déficit.
+    Dirlewanger (2000): restaura leptina y mejora adherencia.
+    """
+    pesos = [float(p["peso_kg"]) for p in get_pesajes_recientes(uid, 35) if p.get("peso_kg")]
+    if len(pesos) < 21:
+        return False
     semanas = 0
     for i in range(0, 21, 7):
-        b1 = pesos[i:i+7]; b2 = pesos[i+7:i+14]
+        b1 = pesos[i:i+7]
+        b2 = pesos[i+7:i+14]
         if not b2: break
-        if sum(b1)/len(b1) < sum(b2)/len(b2) - 0.1: semanas += 1
-        else: break
+        if sum(b1)/len(b1) < sum(b2)/len(b2) - 0.1:
+            semanas += 1
+        else:
+            break
     return semanas >= 3
-
-# ── ANÁLISIS Y TOKENS ─────────────────────────────────────────────────────────
-
-def save_analisis(uid: int, tipo: str, texto: str):
-    execute("INSERT INTO analisis (user_id,tipo,texto) VALUES (?,?,?)", (uid,tipo,texto))
-
-def create_login_token(uid: int) -> str:
-    token = secrets.token_urlsafe(32)
-    execute("INSERT INTO login_tokens (token,user_id) VALUES (?,?)", (token,uid))
-    return token
-
-def verify_login_token(token: str) -> int | None:
-    r = fetchone("SELECT user_id,usado,created_at FROM login_tokens WHERE token=?", (token,))
-    if not r or r["usado"]: return None
-    created = datetime.fromisoformat(r["created_at"])
-    if datetime.utcnow() - created > timedelta(minutes=5): return None
-    execute("UPDATE login_tokens SET usado=1 WHERE token=?", (token,))
-    return r["user_id"]
 
 
 def get_plan_nutricion_activo(uid: int) -> dict | None:
@@ -317,8 +673,35 @@ def get_plan_nutricion_activo(uid: int) -> dict | None:
         (uid,)
     )
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ANÁLISIS Y TOKENS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def save_analisis(uid: int, tipo: str, texto: str):
+    execute(
+        "INSERT INTO analisis (user_id, tipo, texto) VALUES (?,?,?)", (uid, tipo, texto)
+    )
+
 def get_analisis_historial(uid: int, limit: int = 7) -> list[dict]:
     return fetchall(
         "SELECT tipo, texto, fecha FROM analisis WHERE user_id=? ORDER BY fecha DESC LIMIT ?",
         (uid, limit)
     )
+
+def create_login_token(uid: int) -> str:
+    token = secrets.token_urlsafe(32)
+    execute("INSERT INTO login_tokens (token, user_id) VALUES (?,?)", (token, uid))
+    return token
+
+def verify_login_token(token: str) -> int | None:
+    r = fetchone(
+        "SELECT user_id, usado, created_at FROM login_tokens WHERE token=?", (token,)
+    )
+    if not r or r["usado"]:
+        return None
+    created = datetime.fromisoformat(r["created_at"])
+    if datetime.utcnow() - created > timedelta(minutes=10):
+        return None
+    execute("UPDATE login_tokens SET usado=1 WHERE token=?", (token,))
+    return r["user_id"]
