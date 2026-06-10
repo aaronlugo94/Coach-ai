@@ -124,12 +124,10 @@ def health():
 async def verify_web_login(token: str):
     from db.database import fetchone, execute
     from datetime import datetime, timedelta
-    r = fetchone("SELECT user_id, usado, created_at FROM login_tokens WHERE token=?", (token,))
+    r = fetchone("SELECT user_id FROM login_tokens WHERE token=?", (token,))
     if not r:
         return JSONResponse({"error": "Token no encontrado"}, status_code=401)
-    if r["usado"]:
-        return JSONResponse({"error": "Token ya usado"}, status_code=401)
-    # No marcamos como usado — el token sirve como sesión permanente de la web
+    # Token permanente — no expira, sirve como sesión de la web
     return JSONResponse({"user_id": r["user_id"], "valid": True})
 
 
