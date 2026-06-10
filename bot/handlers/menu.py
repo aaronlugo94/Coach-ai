@@ -18,6 +18,8 @@ ADMIN   = int(os.environ.get("ADMIN_TELEGRAM_ID","0"))
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid    = update.effective_user.id
     nombre = update.effective_user.first_name or ""
+    # Siempre registrar el usuario en la DB al hacer /start
+    upsert_usuario(uid, nombre=nombre)
     n      = nombre.split()[0] if nombre else "ahí"
 
     if not has_plan(uid):
@@ -55,13 +57,16 @@ async def cmd_reset_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid   = update.effective_user.id
+    uid    = update.effective_user.id
+    nombre = update.effective_user.first_name or ""
+    # Asegurar que el usuario existe en la DB antes de crear el token
+    upsert_usuario(uid, nombre=nombre)
     token = create_login_token(uid)
-    url   = f"{WEB_URL}/auth?token={token}"
+    url   = f"{WEB_URL}/login?token={token}"
     await update.message.reply_text(
-        "Toca para entrar 👇\n<i>Válido 5 minutos.</i>",
+        f"Toca para entrar a la web 👇\n<i>Válido 10 minutos.</i>",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌐 Entrar", url=url)]]))
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌐 Invisible Coach", url=url)]]))
 
 
 async def cmd_conectar_fit(update: Update, context: ContextTypes.DEFAULT_TYPE):
