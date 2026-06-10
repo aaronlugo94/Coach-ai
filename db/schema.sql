@@ -1,5 +1,12 @@
+-- ============================================================
+-- Invisible Coach — DB Schema v2.0
+-- Compatible con v1: solo agrega tablas y columnas nuevas
+-- ============================================================
+
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
+
+-- ── TABLAS BASE (sin cambios) ─────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS usuarios_permitidos (
     user_id   INTEGER PRIMARY KEY,
@@ -37,7 +44,15 @@ CREATE TABLE IF NOT EXISTS usuarios (
     renpho_password  TEXT,
     ciclo_actual     INTEGER DEFAULT 1,
     onboarding_done  INTEGER DEFAULT 0,
-    sueño_horas      REAL
+    sueño_horas      REAL,
+    -- Nuevas en v2: modelo Bannister
+    fitness_score    REAL DEFAULT 0.0,   -- Fitness acumulado (τ=42 días)
+    fatiga_score     REAL DEFAULT 0.0,   -- Fatiga acumulada (τ=7 días)
+    performance      REAL DEFAULT 0.0,   -- Performance = Fitness - Fatiga
+    hrv_baseline     REAL,               -- HRV promedio 30 días (baseline)
+    rhr_baseline     REAL,               -- FC reposo promedio 30 días
+    fatiga_snc       INTEGER DEFAULT 0,  -- 1 si fatiga SNC detectada
+    semanas_deficit  INTEGER DEFAULT 0   -- Semanas consecutivas en déficit calórico
 );
 
 CREATE TABLE IF NOT EXISTS estado_plan (
@@ -95,6 +110,8 @@ CREATE TABLE IF NOT EXISTS sesiones (
     rir_promedio  REAL,
     sueño_horas   REAL,
     duracion_min  INTEGER,
+    -- Nueva en v2: carga de entrenamiento para Bannister
+    carga_entreno REAL DEFAULT 0.0,  -- volumen × intensidad del día
     fecha         TEXT DEFAULT (date('now'))
 );
 
@@ -131,6 +148,9 @@ CREATE TABLE IF NOT EXISTS actividad_diaria (
     sueño_rem_min       INTEGER,
     sueño_ligero_min    INTEGER,
     fuente              TEXT DEFAULT 'google_fit',
+    -- Nueva en v2: zona cardíaca predominante del día
+    zona_fc_predominante INTEGER DEFAULT 1,  -- 1-5 según % FCmáx
+    rer_estimado         REAL,               -- Cociente respiratorio estimado
     UNIQUE(user_id, fecha)
 );
 
@@ -164,3 +184,34 @@ CREATE TABLE IF NOT EXISTS login_tokens (
     usado      INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now'))
 );
+
+-- ── TABLA NUEVA v2: Estado Bannister diario ───────────────────────────────────
+-- Historial del modelo Fitness-Fatiga por día
+-- Bannister (1975), validado Calvert (2003)
+CREATE TABLE IF NOT EXISTS bannister_diario (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES usuarios(user_id),
+    fecha       TEXT NOT NULL,
+    -- Carga del día (w_t): volumen × intensidad relativa
+    carga       REAL DEFAULT 0.0,
+    -- Fitness acumulado: F(t) = F(t-1)·e^(-1/42) + w(t)
+    fitness     REAL DEFAULT 0.0,
+    -- Fatiga acumulada: G(t) = G(t-1)·e^(-1/7) + w(t)
+    fatiga      REAL DEFAULT 0.0,
+    -- Performance: P(t) = Fitness - Fatiga
+    performance REAL DEFAULT 0.0,
+    -- Datos del día para el cálculo
+    hrv         REAL,
+    fc_reposo   REAL,
+    sueño_horas REAL,
+    -- Flags de estado
+    fatiga_snc  INTEGER DEFAULT 0,   -- 1 si HRV < baseline×0.85
+    deload_auto INTEGER DEFAULT 0,   -- 1 si se aplicó deload automático
+    UNIQUE(user_id, fecha)
+);
+CREATE INDEX IF NOT EXISTS idx_bannister ON bannister_diario(user_id, fecha DESC);
+
+-- ── MIGRACIONES SEGURAS (ALTER TABLE) ────────────────────────────────────────
+-- Se ejecutan con IF NOT EXISTS implícito via try/except en Python
+-- Columnas nuevas en usuarios (para DB existentes en Railway)
+-- Ver: database.py → _run_migrations()
