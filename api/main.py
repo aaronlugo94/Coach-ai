@@ -129,10 +129,7 @@ async def verify_web_login(token: str):
         return JSONResponse({"error": "Token no encontrado"}, status_code=401)
     if r["usado"]:
         return JSONResponse({"error": "Token ya usado"}, status_code=401)
-    created = datetime.fromisoformat(r["created_at"])
-    if datetime.utcnow() - created > timedelta(minutes=10):
-        return JSONResponse({"error": "Token expirado"}, status_code=401)
-    execute("UPDATE login_tokens SET usado=1 WHERE token=?", (token,))
+    # No marcamos como usado — el token sirve como sesión permanente de la web
     return JSONResponse({"user_id": r["user_id"], "valid": True})
 
 
