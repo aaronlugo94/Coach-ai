@@ -71,9 +71,21 @@ async def login_email(body: EmailLogin):
 # ── User endpoints ────────────────────────────────────────────────────────────
 
 
-@router.get("/auth/login")
-def verify_web_login(token: str):
+class TokenBody(BaseModel):
+    token: str
+
+@router.post("/auth/login")
+def verify_web_login(body: TokenBody):
     """Verifica el magic link. Token permanente — sirve como sesión web."""
+    r = fetchone("SELECT user_id FROM login_tokens WHERE token=?", (body.token,))
+    if not r:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"error": "Token no encontrado"}, status_code=401)
+    return {"user_id": r["user_id"], "valid": True}
+
+@router.get("/auth/login")
+def verify_web_login_get(token: str):
+    """GET alias para compatibilidad."""
     r = fetchone("SELECT user_id FROM login_tokens WHERE token=?", (token,))
     if not r:
         from fastapi.responses import JSONResponse
