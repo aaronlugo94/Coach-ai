@@ -80,6 +80,10 @@ def _run_migrations():
         ("usuarios", "wearable",             "TEXT DEFAULT 'ninguno'"),
         # Sesión 9: Renpho sync rate-limited
         ("usuarios", "renpho_last_sync",     "TEXT"),
+        # Sesión 11: onboarding v2
+        ("usuarios", "fecha_nac",            "TEXT"),
+        ("usuarios", "electrodomesticos",    "TEXT"),
+        ("usuarios", "recuperacion_activa",  "TEXT"),
     ]
     with get_db() as conn:
         for tabla, col, tipo in nuevas_columnas:
@@ -114,6 +118,7 @@ def upsert_usuario(uid: int, **kw):
         "fatiga_snc","semanas_deficit",
         "hora_gym","hora_checkin","duracion_sesion","proteinas_favoritas",
         "nivel_estres","factor_estres","wearable","renpho_last_sync",
+        "fecha_nac","electrodomesticos","recuperacion_activa",
     }
     kw = {k: v for k, v in kw.items() if k in COLS}
     if not kw: return
