@@ -84,6 +84,9 @@ def _start_scheduler():
     # Sync Google Fit: cada usuario a su hora (6am por defecto)
     sch.add_job(_sync_gfit_all, "cron", minute="*/30", id="gfit")
 
+    # Sync Renpho: máximo 1 intento/hora, ventana 6am-10am (rate-limit safe)
+    sch.add_job(_sync_renpho_all, "cron", hour="6-10", minute=0, id="renpho")
+
     sch.start()
     logger.info("Scheduler iniciado — notificaciones adaptativas")
 
@@ -113,6 +116,12 @@ async def _resumen_dominical():
         return
     from notifications.night import enviar_resumen_dominical
     await enviar_resumen_dominical(bot=_bot.bot)
+
+
+async def _sync_renpho_all():
+    """Sync Renpho — máximo 1/hora, ventana 6-10am, se detiene tras éxito diario."""
+    from engine.body.renpho import sync_all_renpho
+    await sync_all_renpho(bot=_bot.bot if _bot else None)
 
 
 async def _sync_gfit_all():
