@@ -871,10 +871,10 @@ async def handle_texto_otra(update, context, tipo: str, texto: str):
             f"¿Qué tipo de alimentación llevas o prefieres?",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🍗 Omnívoro / Dieta flexible", "dt:omnivoro")],
-                [InlineKeyboardButton("🥗 Saludable — comida real",   "dt:saludable")],
-                [InlineKeyboardButton("🌱 Vegetariano / Vegano",      "dt:vegano")],
-                [InlineKeyboardButton("🍖 Alta en proteína (prioridad)","dt:proteina")],
+                [InlineKeyboardButton("🍗 Omnívoro / Dieta flexible", callback_data="dt:omnivoro")],
+                [InlineKeyboardButton("🥗 Saludable — comida real", callback_data="dt:saludable")],
+                [InlineKeyboardButton("🌱 Vegetariano / Vegano", callback_data="dt:vegano")],
+                [InlineKeyboardButton("🍖 Alta en proteína (prioridad)", callback_data="dt:proteina")],
             ]))
         return
 
@@ -905,10 +905,10 @@ async def handle_texto_otra(update, context, tipo: str, texto: str):
             f"<i>El modelo Bannister usa HRV y FC reposo para ajustar tu plan</i>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⌚ Google Fit / WearOS", "wear:google_fit")],
-                [InlineKeyboardButton("🍎 Apple Health",       "wear:apple")],
-                [InlineKeyboardButton("📱 Samsung Health",     "wear:samsung")],
-                [InlineKeyboardButton("📊 Sin reloj — solo báscula","wear:ninguno")],
+                [InlineKeyboardButton("⌚ Google Fit / WearOS", callback_data="wear:google_fit")],
+                [InlineKeyboardButton("🍎 Apple Health", callback_data="wear:apple")],
+                [InlineKeyboardButton("📱 Samsung Health", callback_data="wear:samsung")],
+                [InlineKeyboardButton("📊 Sin reloj — solo báscula", callback_data="wear:ninguno")],
             ]))
         return
 
