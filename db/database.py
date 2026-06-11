@@ -685,6 +685,24 @@ def get_plan_nutricion_activo(uid: int) -> dict | None:
         (uid,)
     )
 
+def save_plan_nutricion(uid: int, plan_json: dict, macros: dict):
+    """Guarda el plan de nutrición semanal generado por Gemini."""
+    import json as _json
+    execute("""
+        INSERT INTO planes_nutricion
+        (user_id, semana_inicio, kcal_objetivo, proteina_g, carbs_g, grasas_g,
+         es_refeed, plan_json, ajuste_kcal, razon_ajuste)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
+    """, (
+        uid, str(date.today()),
+        macros.get("kcal"), macros.get("proteina_g"),
+        macros.get("carbs_g"), macros.get("grasas_g"),
+        1 if macros.get("es_refeed") else 0,
+        _json.dumps(plan_json, ensure_ascii=False),
+        macros.get("ajuste_siso",{}).get("kcal",0),
+        macros.get("ajuste_siso",{}).get("razon",""),
+    ))
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ANÁLISIS Y TOKENS
