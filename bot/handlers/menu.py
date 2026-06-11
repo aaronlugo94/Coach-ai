@@ -43,11 +43,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<b>¿Cuál es tu objetivo principal a 90 días?</b>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⚡ Recomposición corporal",            "ob:recomposicion")],
-                [InlineKeyboardButton("💪 Volumen limpio — máxima masa magra","ob:volumen")],
-                [InlineKeyboardButton("🔥 Déficit eficiente — perder grasa", "ob:deficit")],
-                [InlineKeyboardButton("🍑 Glúteo y pierna",                  "ob:gluteo")],
-                [InlineKeyboardButton("🏃 Salud, energía y bienestar",       "ob:salud")],
+                [InlineKeyboardButton("⚡ Recomposición corporal",            callback_data="ob:recomposicion")],
+                [InlineKeyboardButton("💪 Volumen limpio — máxima masa magra",callback_data="ob:volumen")],
+                [InlineKeyboardButton("🔥 Déficit eficiente — perder grasa", callback_data="ob:deficit")],
+                [InlineKeyboardButton("🍑 Glúteo y pierna",                  callback_data="ob:gluteo")],
+                [InlineKeyboardButton("🏃 Salud, energía y bienestar",       callback_data="ob:salud")],
             ]))
         return
 
