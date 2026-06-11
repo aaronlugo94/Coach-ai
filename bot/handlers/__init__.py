@@ -6,6 +6,7 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                            MessageHandler, filters)
 from db.database import get_allowed_users
 from .menu import (cmd_start, cmd_reset_plan, cmd_login, cmd_conectar_fit,
+                   cmd_conectar_renpho,
                    cmd_sethorario, cmd_help, cmd_adduser, handler_texto,
                    handle_menu, handle_rst, handle_horario)
 from .onboarding import (
@@ -116,6 +117,7 @@ def register_handlers(app: Application):
     app.add_handler(CommandHandler("sethorario",   cmd_sethorario))
     app.add_handler(CommandHandler("reset_plan",   cmd_reset_plan))
     app.add_handler(CommandHandler("conectar_fit", cmd_conectar_fit))
+    app.add_handler(CommandHandler("conectar_renpho", cmd_conectar_renpho))
     app.add_handler(CommandHandler("help",         cmd_help))
     app.add_handler(CommandHandler("adduser",      cmd_adduser))
     app.add_handler(CallbackQueryHandler(callback_router))
