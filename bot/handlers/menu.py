@@ -192,15 +192,17 @@ async def handle_menu(query, uid: int, context):
 
     elif sub == "dieta":
         from engine.nutrition.macros import calcular_macros_dia
+        from db.database import get_ejercicios_dia, get_plan_nutricion_activo
+        import json as _json
+
         semana, dia = get_estado(uid)
-        ejs = get_estado(uid)
-        from db.database import get_ejercicios_dia
-        es_gym = bool(get_ejercicios_dia(uid, *get_estado(uid)))
+        es_gym = bool(get_ejercicios_dia(uid, semana, dia))
         mac = calcular_macros_dia(uid, es_gym=es_gym)
         if not mac:
             try: await query.edit_message_text("🥗 Pésate para calcular tus macros.", reply_markup=BTN_MENU)
             except Exception: pass
             return
+
         ajuste = mac.get("ajuste_siso",{})
         ajuste_str = ""
         if ajuste.get("accion") == "reducir":
@@ -208,13 +210,37 @@ async def handle_menu(query, uid: int, context):
         elif ajuste.get("accion") == "subir":
             ajuste_str = f"\n📈 Ajuste: +{ajuste['kcal']} kcal — {ajuste['razon']}"
         refeed_str = "\n🔄 <b>Semana de refeed</b> — comes a mantenimiento esta semana." if mac.get("es_refeed") else ""
+
+        header = (
+            f"🥗 <b>{'Hoy — día de gym' if mac['es_gym'] else 'Hoy — día de descanso'}</b>\n\n"
+            f"🔥 {mac['kcal']} kcal\n"
+            f"🥩 {mac['proteina_g']}g proteína ({mac['toma_proteina']}g × 4 tomas)\n"
+            f"🍞 {mac['carbs_g']}g carbs  🥑 {mac['grasas_g']}g grasas"
+            f"{ajuste_str}{refeed_str}"
+        )
+
+        # Intentar mostrar las comidas reales del plan semanal generado
+        comidas_str = ""
+        try:
+            plan = get_plan_nutricion_activo(uid)
+            if plan and plan.get("plan_json"):
+                data = _json.loads(plan["plan_json"])
+                dia_plan = data.get("semana", {}).get(dia)
+                if dia_plan and dia_plan.get("comidas"):
+                    lineas = []
+                    for c in dia_plan["comidas"]:
+                        alimentos = ", ".join(a.get("nombre","") for a in c.get("alimentos",[])[:3])
+                        lineas.append(f"<b>{c.get('hora','')} — {c.get('nombre','')}</b>\n{alimentos}")
+                    comidas_str = "\n\n" + "\n\n".join(lineas)
+        except Exception:
+            pass
+
+        if not comidas_str:
+            comidas_str = "\n\n<i>Plan de comidas en camino — genéralo en la web (Nutrición → Generar ahora)</i>"
+
         try:
             await query.edit_message_text(
-                f"🥗 <b>{'Hoy — día de gym' if mac['es_gym'] else 'Hoy — día de descanso'}</b>\n\n"
-                f"🔥 {mac['kcal']} kcal\n"
-                f"🥩 {mac['proteina_g']}g proteína ({mac['toma_proteina']}g × 4 tomas)\n"
-                f"🍞 {mac['carbs_g']}g carbs  🥑 {mac['grasas_g']}g grasas"
-                f"{ajuste_str}{refeed_str}",
+                header + comidas_str,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🌐 Ver plan completo", url=f"{WEB_URL}/nutricion")],
                     [InlineKeyboardButton("🏠 Menú", callback_data="m:main")],
