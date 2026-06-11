@@ -321,6 +321,35 @@ def get_nutricion(authorization: str = Header(None)):
     return {"semana": {}}
 
 
+@router.post("/api/nutricion/generar")
+async def generar_nutricion_ahora(authorization: str = Header(None)):
+    """Genera el plan de nutrición semanal bajo demanda (no esperar al domingo)."""
+    uid = get_uid(authorization)
+    from db.database import save_plan_nutricion, get_ciclo
+    from ai.coach import generar_plan_nutricion
+
+    usuario = get_usuario(uid)
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    semana, _ = get_estado(uid)
+    dias_rutina = fetchall(
+        "SELECT DISTINCT dia FROM rutinas WHERE user_id=? AND ciclo=? AND semana=?",
+        (uid, get_ciclo(uid), semana)
+    )
+    dias_gym = [r["dia"] for r in dias_rutina] or ["lunes","miercoles","viernes","domingo"]
+
+    macros = calcular_macros_dia(uid, es_gym=True)
+    datos = {"usuario": usuario, "macros": macros, "dias_gym": dias_gym}
+
+    plan_json = await generar_plan_nutricion(datos)
+    if not plan_json:
+        raise HTTPException(status_code=500, detail="Gemini no pudo generar el plan. Intenta de nuevo.")
+
+    save_plan_nutricion(uid, plan_json, macros)
+    return plan_json
+
+
 # ── Cuerpo ────────────────────────────────────────────────────────────────────
 
 @router.get("/api/pesajes")
