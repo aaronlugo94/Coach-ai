@@ -23,14 +23,32 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     n      = nombre.split()[0] if nombre else "ahí"
 
     if not has_plan(uid):
+        # Mensaje de bienvenida — explica la ciencia en simple
         await update.message.reply_text(
             f"Hola {n} 👋\n\n"
-            "<b>Coach</b> — tu entrenador y nutriólogo personal.\n\n"
-            "💪 Rutina de gym con progresión automática\n"
-            "⚖️ Análisis corporal desde tu báscula\n"
-            "🥗 Plan de nutrición semanal con IA\n\n"
-            "Setup en 2 minutos. ¿Cuál es tu objetivo?",
-            reply_markup=kb_objetivos(), parse_mode="HTML")
+            "<b>Soy tu entrenador y nutriólogo personal con IA.</b>\n\n"
+            "Así funciono:\n"
+            "🧠 <b>Modelo Bannister</b> — mido tu fatiga real (sueño, HRV, "
+            "esfuerzo) y ajusto tu volumen de entrenamiento día a día\n"
+            "📈 <b>Doble progresión</b> — subo tus pesos automáticamente "
+            "cuando estás listo, sin adivinar\n"
+            "🥗 <b>SISO nutricional</b> — ajusto tus calorías cada semana "
+            "según lo que diga la báscula, no una fórmula fija\n\n"
+            "Todo esto corre solo, en automático. Tú solo entrenas y "
+            "registras tus datos.\n\n"
+            "Empecemos — son 4 bloques rápidos de preguntas 👇",
+            parse_mode="HTML")
+
+        await update.message.reply_text(
+            "<b>¿Cuál es tu objetivo principal a 90 días?</b>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⚡ Recomposición corporal",            "ob:recomposicion")],
+                [InlineKeyboardButton("💪 Volumen limpio — máxima masa magra","ob:volumen")],
+                [InlineKeyboardButton("🔥 Déficit eficiente — perder grasa", "ob:deficit")],
+                [InlineKeyboardButton("🍑 Glúteo y pierna",                  "ob:gluteo")],
+                [InlineKeyboardButton("🏃 Salud, energía y bienestar",       "ob:salud")],
+            ]))
         return
 
     semana, dia = get_estado(uid)
@@ -109,12 +127,15 @@ async def cmd_sethorario(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "❓ <b>Comandos</b>\n\n"
-        "<code>/start</code> — Menú principal\n"
-        "<code>/login</code> — Web app\n"
-        "<code>/sethorario</code> — Cambiar recordatorio\n"
-        "<code>/reset_plan</code> — Nueva rutina o dieta\n"
-        "<code>/conectar_fit</code> — Conectar Google Fit",
+        "❓ <b>Comandos disponibles</b>\n\n"
+        "<code>/start</code> — Menú principal / iniciar setup\n"
+        "<code>/login</code> — Acceder a la web app\n"
+        "<code>/sethorario</code> — Cambiar hora de recordatorio\n"
+        "<code>/reset_plan</code> — Generar nueva rutina o dieta\n"
+        "<code>/conectar_fit</code> — Conectar Google Fit\n"
+        "<code>/conectar_renpho</code> — Conectar báscula Renpho\n\n"
+        "💡 <i>Usa los botones del menú principal para todo lo demás — "
+        "no necesitas escribir comandos.</i>",
         parse_mode="HTML")
 
 
@@ -243,6 +264,13 @@ async def handle_horario(query, uid: int):
 async def handler_texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid   = update.effective_user.id
     texto = (update.message.text or "").strip()
+
+    # ── Texto libre durante onboarding ("Otra...") ───────────────────────────
+    esperando = context.user_data.get("esperando_texto")
+    if esperando in ("lesion_otra", "restriccion_otra", "recuperacion_otra"):
+        from bot.handlers.onboarding import handle_texto_otra
+        await handle_texto_otra(update, context, esperando, texto)
+        return
 
     # ── Flujo de conexión Renpho (email + password) ──────────────────────────
     renpho_step = context.user_data.get("renpho_step")
