@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application
 
-from db.database import init_db, verify_login_token, fetchall
+from db.database import init_db, verify_login_token, fetchall, get_usuario
 from engine.body.healthconnect import exchange_code, esta_conectado, sync_usuario
 from api.routes import router
 
@@ -78,6 +78,9 @@ def _start_scheduler():
     # Cada mañana a las 9am: evaluar notificaciones de enganche
     sch.add_job(_engagement, "cron", hour=9, minute=0, id="engagement")
 
+    # Cada domingo a las 6pm: generar plan de nutrición de la siguiente semana
+    sch.add_job(_generar_planes_nutricion, "cron", day_of_week="sun", hour=18, minute=0, id="plan_nutricion")
+
     # Cada domingo a las 8pm: resumen semanal
     sch.add_job(_resumen_dominical, "cron", day_of_week="sun", hour=20, minute=0, id="resumen")
 
@@ -109,6 +112,55 @@ async def _engagement():
         return
     from notifications.engagement import evaluar_y_enviar
     await evaluar_y_enviar(bot=_bot.bot)
+
+
+async def _generar_planes_nutricion():
+    """
+    Domingo 6pm: genera el plan de nutrición de la próxima semana
+    para cada usuario activo, usando Gemini.
+    """
+    from db.database import (fetchall, get_estado, get_ejercicios_dia,
+                             save_plan_nutricion, get_ciclo)
+    from engine.nutrition.macros import calcular_macros_dia
+    from ai.coach import generar_plan_nutricion
+
+    usuarios = fetchall("""
+        SELECT user_id FROM usuarios u
+        JOIN usuarios_permitidos p ON u.user_id=p.user_id
+        WHERE u.onboarding_done=1
+    """, ())
+
+    for u in usuarios:
+        uid = u["user_id"]
+        try:
+            usuario = get_usuario(uid)
+
+            # Determinar días de gym de la próxima semana
+            ciclo  = get_ciclo(uid)
+            semana, _ = get_estado(uid)
+            dias_rutina = fetchall(
+                "SELECT DISTINCT dia FROM rutinas WHERE user_id=? AND ciclo=? AND semana=?",
+                (uid, ciclo, semana)
+            )
+            dias_gym = [r["dia"] for r in dias_rutina] or ["lunes","miercoles","viernes","domingo"]
+
+            # Macros base (día de gym, para que Gemini tenga referencia)
+            macros = calcular_macros_dia(uid, es_gym=True)
+
+            datos = {
+                "usuario":  usuario,
+                "macros":   macros,
+                "dias_gym": dias_gym,
+            }
+
+            plan_json = await generar_plan_nutricion(datos)
+            if plan_json:
+                save_plan_nutricion(uid, plan_json, macros)
+                logger.info("Plan nutrición generado uid=%s", uid)
+            else:
+                logger.warning("Plan nutrición vacío uid=%s — Gemini no devolvió JSON válido", uid)
+        except Exception as e:
+            logger.error("Error generando plan nutrición uid=%s: %s", uid, e, exc_info=True)
 
 
 async def _resumen_dominical():
