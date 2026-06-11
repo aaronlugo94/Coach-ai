@@ -1,5 +1,5 @@
 """
-bot/handlers/__init__.py — Invisible Coach v3.0
+bot/handlers/__init__.py — Invisible Coach v4.0
 Router central de callbacks. Registra todos los handlers.
 """
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
@@ -10,10 +10,10 @@ from .menu import (cmd_start, cmd_reset_plan, cmd_login, cmd_conectar_fit,
                    cmd_sethorario, cmd_help, cmd_adduser, handler_texto,
                    handle_menu, handle_rst, handle_horario)
 from .onboarding import (
-    handle_ob, handle_edad, handle_peso, handle_altura, handle_sexo,
+    handle_ob, handle_cal, handle_num, handle_sexo,
     handle_nv, handle_dy, handle_dur, handle_gym_hora, handle_am, handle_lm,
-    handle_dt, handle_prot, handle_rt, handle_prep,
-    handle_sueño_hab, handle_trabajo, handle_estres, handle_wear,
+    handle_dt, handle_prot, handle_rt, handle_prep, handle_elec,
+    handle_sueño_hab, handle_trabajo, handle_estres, handle_ra, handle_wear,
 )
 from .gym import handle_ej_start, handle_pw, handle_ej_ok, handle_fb, handle_sue, handle_skip
 from .checkin import handle_ci
@@ -29,10 +29,10 @@ async def callback_router(update, context):
 
     # Onboarding no requiere estar en lista de permitidos
     ONBOARDING_PREFIXES = (
-        "ob:","edad:","peso:","altura:","sexo:",
+        "ob:","cal:","num:","sexo:",
         "nv:","dy:","dur:","gym_hora:","am:","lm:",
-        "dt:","prot:","rt:","prep:",
-        "sueño_hab:","trabajo:","estres:","wear:",
+        "dt:","prot:","rt:","prep:","elec:",
+        "sueño_hab:","trabajo:","estres:","ra:","wear:",
     )
     es_onboarding = any(data.startswith(p) for p in ONBOARDING_PREFIXES)
 
@@ -56,9 +56,8 @@ async def callback_router(update, context):
 
         # ── Onboarding — Bloque 1: Perfil biológico ───────────────────────
         elif data.startswith("ob:"):         await handle_ob(query, uid, context)
-        elif data.startswith("edad:"):       await handle_edad(query, uid)
-        elif data.startswith("peso:"):       await handle_peso(query, uid)
-        elif data.startswith("altura:"):     await handle_altura(query, uid)
+        elif data.startswith("cal:"):        await handle_cal(query, uid, context)
+        elif data.startswith("num:"):        await handle_num(query, uid, context)
         elif data.startswith("sexo:"):       await handle_sexo(query, uid)
 
         # ── Onboarding — Bloque 2: Experiencia y capacidad mecánica ──────
@@ -67,18 +66,20 @@ async def callback_router(update, context):
         elif data.startswith("dur:"):        await handle_dur(query, uid)
         elif data.startswith("gym_hora:"):   await handle_gym_hora(query, uid)
         elif data.startswith("am:"):         await handle_am(query, uid)
-        elif data.startswith("lm:"):         await handle_lm(query, uid)
+        elif data.startswith("lm:"):         await handle_lm(query, uid, context)
 
         # ── Onboarding — Bloque 3: Nutrición ─────────────────────────────
         elif data.startswith("dt:"):         await handle_dt(query, uid, context)
         elif data.startswith("prot:"):       await handle_prot(query, uid, context)
         elif data.startswith("rt:"):         await handle_rt(query, uid, context)
         elif data.startswith("prep:"):       await handle_prep(query, uid)
+        elif data.startswith("elec:"):       await handle_elec(query, uid, context)
 
         # ── Onboarding — Bloque 4: Recuperación ──────────────────────────
         elif data.startswith("sueño_hab:"):  await handle_sueño_hab(query, uid)
         elif data.startswith("trabajo:"):    await handle_trabajo(query, uid)
         elif data.startswith("estres:"):     await handle_estres(query, uid)
+        elif data.startswith("ra:"):         await handle_ra(query, uid, context)
         elif data.startswith("wear:"):       await handle_wear(query, uid, context)
 
         # ── Gym: sesión activa ────────────────────────────────────────────
@@ -110,7 +111,7 @@ async def callback_router(update, context):
 def register_handlers(app: Application):
     allowed = get_allowed_users()
     logger.info("Usuarios permitidos: %s", allowed)
-    logger.info("Invisible Coach handlers v3.0")
+    logger.info("Invisible Coach handlers v4.0")
 
     app.add_handler(CommandHandler("start",        cmd_start))
     app.add_handler(CommandHandler("login",        cmd_login))
