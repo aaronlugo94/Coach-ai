@@ -15,6 +15,7 @@ MENU_INLINE = InlineKeyboardMarkup([
      InlineKeyboardButton("⚖️ Mi cuerpo",     callback_data="m:cuerpo")],
     [InlineKeyboardButton("🥗 Mi dieta",      callback_data="m:dieta"),
      InlineKeyboardButton("🔄 Nuevo plan",    callback_data="m:nuevo")],
+    [InlineKeyboardButton("📸 Compartir progreso", callback_data="m:share")],
 ])
 
 BTN_MENU = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menú", callback_data="m:main")]])
