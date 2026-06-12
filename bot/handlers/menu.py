@@ -190,6 +190,53 @@ async def handle_menu(query, uid: int, context):
                 ]), parse_mode="HTML")
         except Exception: pass
 
+    elif sub == "share":
+        from engine.growth.cards import generar_card_progreso
+        from db.database import fetchall
+
+        racha = gamification.get_racha(uid)
+        if racha < 1:
+            try:
+                await query.edit_message_text(
+                    "📸 Completa tu primera sesión de hoy para generar "
+                    "tu primera card de progreso.",
+                    reply_markup=BTN_MENU)
+            except Exception: pass
+            return
+
+        progs_raw = fetchall("""
+            SELECT r.ejercicio,
+                   MAX(p.peso_lbs) peso_actual, MIN(p.peso_lbs) peso_inicio,
+                   MAX(p.peso_lbs) - MIN(p.peso_lbs) cambio
+            FROM pesos p
+            JOIN rutinas r ON p.ejercicio_id=r.ejercicio_id AND r.user_id=p.user_id
+            WHERE p.user_id=? AND p.fecha >= date('now','-7 days')
+            GROUP BY p.ejercicio_id
+            HAVING cambio > 0
+            ORDER BY cambio DESC LIMIT 3
+        """, (uid,))
+
+        progresiones = [
+            {"ejercicio": r["ejercicio"], "peso_inicio": r["peso_inicio"], "peso_actual": r["peso_actual"]}
+            for r in progs_raw
+        ]
+
+        u = get_usuario(uid) or {}
+        nombre = u.get("nombre","") or ""
+
+        try:
+            await query.edit_message_text("📸 Generando tu card...", parse_mode="HTML")
+        except Exception: pass
+
+        png = generar_card_progreso({"nombre": nombre, "racha": racha, "progresiones": progresiones})
+
+        await context.bot.send_photo(
+            chat_id=query.message.chat_id,
+            photo=png,
+            caption="Comparte tu progreso 💪\n\n<i>Guárdala y súbela a tu historia</i>",
+            parse_mode="HTML",
+            reply_markup=BTN_MENU)
+
     elif sub == "dieta":
         from engine.nutrition.macros import calcular_macros_dia
         from db.database import get_ejercicios_dia, get_plan_nutricion_activo
