@@ -442,7 +442,10 @@ async def handle_lm(query, uid: int, context):
     if sub == "ninguna":
         upsert_usuario(uid, limitaciones="ninguna")
         context.user_data.pop("lesion_sel", None)
-        await _avanzar_a_dieta(query, uid)
+        if context.user_data.get("modo_ciclo"):
+            await _generar_ciclo(query, uid, context)
+        else:
+            await _avanzar_a_dieta(query, uid)
         return
 
     if sub == "otra":
@@ -457,7 +460,10 @@ async def handle_lm(query, uid: int, context):
         limitaciones = ",".join(sorted(sel)) if sel else "ninguna"
         upsert_usuario(uid, limitaciones=limitaciones)
         context.user_data.pop("lesion_sel", None)
-        await _avanzar_a_dieta(query, uid)
+        if context.user_data.get("modo_ciclo"):
+            await _generar_ciclo(query, uid, context)
+        else:
+            await _avanzar_a_dieta(query, uid)
         return
 
     if sub in sel: sel.discard(sub)
@@ -830,6 +836,136 @@ async def _mostrar_wearable(query):
             [_btn("📱 Samsung Health",                       "wear:samsung")],
             [_btn("📊 Sin reloj — solo báscula",             "wear:ninguno")],
         ))
+
+
+async def iniciar_ciclo(query, uid: int, context, incluir_dieta: bool = False):
+    """
+    Entrada para /reset_plan — regenerar plan SIN re-onboarding completo.
+    Solo pregunta parámetros de ciclo (nivel, días, duración, horario,
+    ambiente, lesiones). Todo lo demás (peso, dieta, proteínas, etc.)
+    se reusa de la DB.
+    """
+    context.user_data["modo_ciclo"] = True
+    context.user_data["modo_dieta_tambien"] = incluir_dieta
+
+    await _edit(query,
+        "<b>🔄 Generar nuevo ciclo de entrenamiento</b>\n\n"
+        "Solo necesito confirmar lo que pudo cambiar — tu perfil, "
+        "dieta y preferencias se mantienen igual.\n\n"
+        "¿Cuánto tiempo llevas entrenando actualmente?",
+        _kb(
+            [_btn("🌱 Menos de 6 meses",    "nv:principiante")],
+            [_btn("💪 6 meses a 2 años",    "nv:intermedio")],
+            [_btn("🔥 Más de 2 años",       "nv:avanzado")],
+        ))
+
+
+async def regenerar_dieta(uid: int) -> dict | None:
+    """
+    Regenera el plan de nutrición semanal (Gemini) reusando el perfil
+    actual. Usado por /reset_plan → "Nuevo plan de dieta" / "Los dos".
+    Retorna el plan_json o None si falló.
+    """
+    from db.database import (fetchall, get_ciclo, save_plan_nutricion,
+                              get_estado)
+    from engine.nutrition.macros import calcular_macros_dia
+    from ai.coach import generar_plan_nutricion
+
+    usuario = get_usuario(uid)
+    if not usuario:
+        return None
+
+    semana, _ = get_estado(uid)
+    dias_rutina = fetchall(
+        "SELECT DISTINCT dia FROM rutinas WHERE user_id=? AND ciclo=? AND semana=?",
+        (uid, get_ciclo(uid), semana)
+    )
+    dias_gym = [r["dia"] for r in dias_rutina] or ["lunes","miercoles","viernes","domingo"]
+
+    macros = calcular_macros_dia(uid, es_gym=True)
+    datos  = {"usuario": usuario, "macros": macros, "dias_gym": dias_gym}
+
+    plan_json = await generar_plan_nutricion(datos)
+    if plan_json:
+        save_plan_nutricion(uid, plan_json, macros)
+    return plan_json
+
+
+async def _generar_ciclo_core(uid: int, context, notificar) -> None:
+    """
+    Lógica compartida: regenera la rutina (y opcionalmente la dieta)
+    usando el perfil ya guardado en la DB. `notificar(texto)` es una
+    función async que actualiza/envía el mensaje al usuario.
+    """
+    incluir_dieta = context.user_data.get("modo_dieta_tambien", False)
+    context.user_data.pop("modo_ciclo", None)
+    context.user_data.pop("modo_dieta_tambien", None)
+
+    await notificar(
+        "⚙️ <b>Generando tu nuevo ciclo...</b>\n\n"
+        "Reusando tu perfil y preferencias guardadas."
+    )
+
+    try:
+        u = get_usuario(uid)
+        from engine.gym.planner import generar_plan
+
+        plan = generar_plan(
+            nivel      = u.get("nivel","intermedio"),
+            objetivo   = u.get("objetivo_gym","general"),
+            dias       = int(u.get("dias_semana") or 4),
+            ambiente   = u.get("ambiente","gym"),
+            limitacion = u.get("limitaciones","ninguna"),
+            duracion   = int(u.get("duracion_sesion") or 60),
+        )
+        n = insert_plan(uid, plan)
+        set_estado(uid, plan[0]["semana"], plan[0]["dias"][0]["dia"])
+
+        resumen = (
+            f"✅ <b>Nuevo ciclo creado — {n} ejercicios · 4 semanas</b>\n\n"
+            f"  {u.get('nivel','').capitalize()} · {u.get('dias_semana')} días · "
+            f"{u.get('duracion_sesion',60)} min\n"
+            f"  {u.get('ambiente','gym').capitalize()} · {u.get('limitaciones','ninguna')}"
+        )
+
+        if incluir_dieta:
+            await notificar(resumen + "\n\n🥗 Generando tu plan de nutrición... <i>(puede tardar 30s)</i>")
+            plan_nutri = await regenerar_dieta(uid)
+            if plan_nutri:
+                resumen += "\n\n✅ Plan de nutrición actualizado"
+            else:
+                resumen += "\n\n⚠️ El plan de nutrición no se pudo generar — intenta desde la web"
+
+        await notificar(resumen, final=True)
+
+    except Exception as e:
+        logger.error("Error _generar_ciclo uid=%s: %s", uid, e, exc_info=True)
+        await notificar(f"❌ Error: {str(e)[:150]}\n\nEscribe /reset_plan para reintentar.", final=True)
+
+
+async def _generar_ciclo(query, uid: int, context):
+    """Entrada desde un callback (botón) — edita el mensaje existente."""
+    async def notificar(texto, final=False):
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("💪 Ver mi rutina de hoy", callback_data="m:hoy")
+        ]]) if final and texto.startswith("✅") else None
+        try:
+            await query.edit_message_text(texto, parse_mode="HTML", reply_markup=kb)
+        except Exception:
+            pass
+
+    await _generar_ciclo_core(uid, context, notificar)
+
+
+async def _generar_ciclo_desde_mensaje(update, uid: int, context):
+    """Entrada desde texto libre ("Otra...") — envía mensajes nuevos."""
+    async def notificar(texto, final=False):
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("💪 Ver mi rutina de hoy", callback_data="m:hoy")
+        ]]) if final and texto.startswith("✅") else None
+        await update.message.reply_text(texto, parse_mode="HTML", reply_markup=kb)
+
+    await _generar_ciclo_core(uid, context, notificar)
 
 
 async def handle_wear(query, uid: int, context):
