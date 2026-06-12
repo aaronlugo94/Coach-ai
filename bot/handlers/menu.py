@@ -7,7 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from db.database import (get_usuario, get_estado, has_plan, upsert_usuario,
                           create_login_token, get_ultimo_pesaje, get_allowed_users)
-from bot.keyboards import TECLADO_PRINCIPAL, MENU_INLINE, BTN_MENU, kb_objetivos, kb_horario
+from bot.keyboards import TECLADO_PRINCIPAL, MENU_INLINE, BTN_MENU, kb_horario
 from engine.body.healthconnect import get_auth_url, esta_conectado
 import gamification
 
@@ -262,19 +262,40 @@ async def handle_menu(query, uid: int, context):
 
 async def handle_rst(query, uid: int, context):
     tipo = query.data.split(":")[1]
-    if tipo in ("gym","todo"):
-        from db.database import insert_plan
-        context.user_data["solo_gym"] = (tipo == "gym")
+    from bot.handlers.onboarding import iniciar_ciclo, regenerar_dieta
+
+    if tipo in ("gym", "todo"):
+        # Solo pregunta parámetros de ciclo (nivel/días/duración/horario/
+        # ambiente/lesiones) — reusa peso, dieta, proteínas, etc. de la DB.
+        await iniciar_ciclo(query, uid, context, incluir_dieta=(tipo == "todo"))
+
+    elif tipo == "dieta":
+        # Regenera el plan de nutrición directo, sin preguntas —
+        # usa el perfil y macros actuales.
         try:
             await query.edit_message_text(
-                "<b>¿Cuál es tu objetivo?</b>\n\nEl plan se ajusta completamente a esto:",
-                reply_markup=kb_objetivos(), parse_mode="HTML")
+                "🥗 <b>Generando tu nuevo plan de nutrición...</b>\n\n"
+                "<i>Usando tu perfil actual — puede tardar 30s</i>",
+                parse_mode="HTML")
         except Exception: pass
-    elif tipo == "dieta":
-        from bot.keyboards import kb_dieta
+
+        plan = await regenerar_dieta(uid)
+
         try:
-            await query.edit_message_text("🥗 <b>¿Cómo describes tu alimentación?</b>",
-                reply_markup=kb_dieta(), parse_mode="HTML")
+            if plan:
+                await query.edit_message_text(
+                    "✅ <b>Plan de nutrición actualizado</b>\n\n"
+                    "Tu nuevo plan semanal ya está listo.",
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🥗 Ver mi dieta", callback_data="m:dieta")],
+                        [InlineKeyboardButton("🏠 Menú", callback_data="m:main")],
+                    ]))
+            else:
+                await query.edit_message_text(
+                    "⚠️ No se pudo generar el plan. Intenta de nuevo o usa la web.",
+                    parse_mode="HTML",
+                    reply_markup=BTN_MENU)
         except Exception: pass
 
 
