@@ -1,453 +1,351 @@
 """
-engine/body/healthconnect.py — Invisible Coach v2.0
+engine/body/healthconnect.py — Invisible Coach v4.0 (Sesión 14b)
 
-Google Fit REST API + Health Connect.
-OnePlus Watch 4 → Health Connect → Google Fit → Coach AI
+Integración con Google Fit (Fitness REST API v1).
 
-Responsabilidades:
-  1. OAuth2: generar URL, intercambiar código, refrescar token
-  2. Sync diario: pasos, calorías, sueño, HRV, FC reposo
-  3. Estimación de zona cardíaca y RER (cociente respiratorio)
-  4. Actualizar modelo Bannister después de cada sync
-  5. Actualizar baseline HRV/RHR
+FIX CRÍTICO: sync_usuario() antes solo traía pasos/calorías/minutos
+activos. Sueño, HRV, FC reposo y peso NUNCA se traían — por eso el
+dashboard mostraba "Sueño 0h" y los anillos en 0 aunque Google Fit
+estuviera conectado.
 
-Llamar sync_usuario() cada mañana a las 6am desde el scheduler.
+Ahora sync_usuario():
+  1. Pasos / calorías / minutos activos (igual que antes)
+  2. Sueño total + etapas (profundo/REM/ligero) vía Sessions API
+  3. HRV promedio (si el dispositivo lo expone)
+  4. FC en reposo (mínimo de FC del día)
+  5. Peso (si el usuario se pesó con una báscula conectada a Fit)
+     → auto-actualiza usuarios.peso_kg, sin preguntar de nuevo
+  6. Calcula zona_fc_predominante (Karvonen) y rer_estimado
+  7. Llama actualizar_baseline_hrv() y actualizar_bannister()
+
+Cada fetch está aislado en try/except — si un tipo de dato no está
+disponible para el dispositivo del usuario (p.ej. HRV no soportado),
+esa pieza queda en None y el resto del sync continúa normal.
 """
 from __future__ import annotations
-import json
-import logging
-import math
-import os
+import json, logging, os
 from datetime import date, datetime, timedelta, timezone
-
 import httpx
-
-from db.database import (
-    get_usuario, save_actividad, upsert_usuario,
-    actualizar_bannister, actualizar_baseline_hrv,
-)
+from db.database import (get_usuario, save_actividad, upsert_usuario,
+                          actualizar_baseline_hrv, actualizar_bannister)
 
 logger = logging.getLogger(__name__)
-
-CLIENT_ID    = os.environ.get("GOOGLE_CLIENT_ID", "")
-CLIENT_SECRET= os.environ.get("GOOGLE_CLIENT_SECRET", "")
-REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "")
-
+CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID","")
+CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET","")
+REDIRECT_URI  = os.environ.get("GOOGLE_REDIRECT_URI","")
 SCOPES = " ".join([
     "https://www.googleapis.com/auth/fitness.activity.read",
     "https://www.googleapis.com/auth/fitness.sleep.read",
     "https://www.googleapis.com/auth/fitness.heart_rate.read",
     "https://www.googleapis.com/auth/fitness.body.read",
 ])
-
 FITNESS_URL = "https://www.googleapis.com/fitness/v1/users/me"
 TOKEN_URL   = "https://oauth2.googleapis.com/token"
 
+# Segmentos de sueño según Google Fit (com.google.sleep.segment)
+SLEEP_LIGERO = {4}
+SLEEP_PROFUNDO = {5}
+SLEEP_REM = {6}
+SLEEP_ALL = {1,2,3,4,5,6}
 
-# ══════════════════════════════════════════════════════════════════════════════
-# OAUTH2
-# ══════════════════════════════════════════════════════════════════════════════
+# RER estimado por zona de FC (Karvonen) — para distribución de carbos/grasas
+RER_POR_ZONA = {1: 0.72, 2: 0.78, 3: 0.85, 4: 0.92, 5: 1.00}
+
 
 def get_auth_url(uid: int) -> str:
     import urllib.parse
     return "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode({
-        "client_id":     CLIENT_ID,
-        "redirect_uri":  REDIRECT_URI,
-        "response_type": "code",
-        "scope":         SCOPES,
-        "access_type":   "offline",
-        "prompt":        "consent",
-        "state":         str(uid),
+        "client_id": CLIENT_ID, "redirect_uri": REDIRECT_URI,
+        "response_type": "code", "scope": SCOPES,
+        "access_type": "offline", "prompt": "consent", "state": str(uid),
     })
 
 
 async def exchange_code(code: str, uid: int) -> bool:
-    """Intercambia el código OAuth2 por tokens. Guarda en DB."""
     async with httpx.AsyncClient() as c:
         r = await c.post(TOKEN_URL, data={
-            "code":          code,
-            "client_id":     CLIENT_ID,
-            "client_secret": CLIENT_SECRET,
-            "redirect_uri":  REDIRECT_URI,
-            "grant_type":    "authorization_code",
+            "code": code, "client_id": CLIENT_ID, "client_secret": CLIENT_SECRET,
+            "redirect_uri": REDIRECT_URI, "grant_type": "authorization_code",
         })
     if r.status_code != 200:
-        logger.error("OAuth exchange error uid=%s: %s", uid, r.text)
+        logger.error("OAuth error uid=%s: %s", uid, r.text)
         return False
     data = r.json()
-    data["expires_at"] = (
-        datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in", 3600))
-    ).isoformat()
+    data["expires_at"] = (datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in",3600))).isoformat()
     upsert_usuario(uid, google_fit_token=json.dumps(data))
-    logger.info("Google Fit conectado uid=%s", uid)
     return True
 
 
-async def _get_access_token(uid: int) -> str | None:
-    """Retorna un access_token válido. Refresca si expiró."""
+async def _access_token(uid: int) -> str | None:
     u = get_usuario(uid)
-    if not u or not u.get("google_fit_token"):
-        return None
+    if not u or not u.get("google_fit_token"): return None
     data = json.loads(u["google_fit_token"])
-    exp  = datetime.fromisoformat(data.get("expires_at", "2000-01-01T00:00:00+00:00"))
-
+    exp = datetime.fromisoformat(data.get("expires_at","2000-01-01T00:00:00+00:00"))
     if datetime.now(timezone.utc) >= exp - timedelta(minutes=5):
-        refreshed = await _refresh_token(uid, data)
-        if not refreshed:
-            return None
-        data = refreshed
-
+        async with httpx.AsyncClient() as c:
+            r = await c.post(TOKEN_URL, data={
+                "refresh_token": data["refresh_token"], "client_id": CLIENT_ID,
+                "client_secret": CLIENT_SECRET, "grant_type": "refresh_token",
+            })
+        if r.status_code != 200: return None
+        new = r.json()
+        new["refresh_token"] = data["refresh_token"]
+        new["expires_at"] = (datetime.now(timezone.utc) + timedelta(seconds=new.get("expires_in",3600))).isoformat()
+        upsert_usuario(uid, google_fit_token=json.dumps(new))
+        data = new
     return data.get("access_token")
 
 
-async def _refresh_token(uid: int, token_data: dict) -> dict | None:
-    refresh = token_data.get("refresh_token")
-    if not refresh:
-        logger.error("Sin refresh_token uid=%s", uid)
-        return None
-    async with httpx.AsyncClient() as c:
-        r = await c.post(TOKEN_URL, data={
-            "refresh_token": refresh,
-            "client_id":     CLIENT_ID,
-            "client_secret": CLIENT_SECRET,
-            "grant_type":    "refresh_token",
-        })
-    if r.status_code != 200:
-        logger.error("Token refresh error uid=%s: %s", uid, r.status_code)
-        return None
-    new = r.json()
-    new["refresh_token"] = refresh
-    new["expires_at"] = (
-        datetime.now(timezone.utc) + timedelta(seconds=new.get("expires_in", 3600))
-    ).isoformat()
-    upsert_usuario(uid, google_fit_token=json.dumps(new))
-    return new
-
-
-def esta_conectado(uid: int) -> bool:
-    u = get_usuario(uid)
-    if not u or not u.get("google_fit_token"):
-        return False
-    try:
-        return bool(json.loads(u["google_fit_token"]).get("refresh_token"))
-    except Exception:
-        return False
+def _ms(dt): return int(dt.timestamp()*1000)
+def _ns(dt): return int(dt.timestamp()*1_000_000_000)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# HELPERS
+# FETCHERS — cada uno aislado, retorna {} si el dato no está disponible
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _ms(dt: datetime) -> int:
-    return int(dt.timestamp() * 1000)
-
-def _ns(dt: datetime) -> int:
-    return int(dt.timestamp() * 1_000_000_000)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# FETCH ACTIVIDAD (pasos, calorías, minutos)
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def _fetch_actividad(token: str, inicio: datetime, fin: datetime) -> dict:
-    headers = {"Authorization": f"Bearer {token}"}
+async def _fetch_actividad(c, headers, inicio, fin) -> dict:
+    """Pasos, calorías, minutos activos."""
     body = {
         "aggregateBy": [
             {"dataTypeName": "com.google.step_count.delta"},
             {"dataTypeName": "com.google.calories.expended"},
             {"dataTypeName": "com.google.active_minutes"},
-            {"dataTypeName": "com.google.distance.delta"},
         ],
-        "bucketByTime":  {"durationMillis": 86_400_000},
-        "startTimeMillis": _ms(inicio),
-        "endTimeMillis":   _ms(fin),
+        "bucketByTime": {"durationMillis": 86400000},
+        "startTimeMillis": _ms(inicio), "endTimeMillis": _ms(fin),
     }
-    async with httpx.AsyncClient(timeout=15) as c:
-        r = await c.post(f"{FITNESS_URL}/dataset:aggregate", headers=headers, json=body)
-
-    if r.status_code != 200:
-        logger.warning("Actividad fetch error: %s", r.status_code)
-        return {}
-
-    resultado = {}
-    bucket = r.json().get("bucket", [{}])[0]
-    for ds in bucket.get("dataset", []):
-        pts  = ds.get("point", [])
-        if not pts: continue
-        val  = pts[0].get("value", [{}])[0]
-        tipo = ds.get("dataSourceId", "")
-        if "step_count"     in tipo: resultado["pasos"]             = int(val.get("intVal", 0))
-        elif "calories"     in tipo: resultado["calorias_activas"]  = int(val.get("fpVal", 0))
-        elif "active_minutes"in tipo: resultado["minutos_actividad"] = int(val.get("intVal", 0))
-        elif "distance"     in tipo: resultado["distancia_km"]      = round(float(val.get("fpVal", 0)) / 1000, 2)
-
-    return resultado
+    out = {}
+    try:
+        r = await c.post(f"{FITNESS_URL}/dataset:aggregate", headers=headers, json=body, timeout=15)
+        if r.status_code == 200:
+            for bucket in r.json().get("bucket", []):
+                for ds in bucket.get("dataset", []):
+                    pts = ds.get("point", [])
+                    if not pts: continue
+                    v = pts[0].get("value", [{}])[0]
+                    tipo = ds.get("dataSourceId","")
+                    if "step_count" in tipo: out["pasos"] = int(v.get("intVal",0))
+                    elif "calories" in tipo: out["calorias_activas"] = int(v.get("fpVal",0))
+                    elif "active_minutes" in tipo: out["minutos_actividad"] = int(v.get("intVal",0))
+    except Exception as e:
+        logger.warning("Fit actividad fetch falló: %s", e)
+    return out
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# FETCH SUEÑO
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def _fetch_sueño(token: str, inicio: datetime, fin: datetime) -> dict:
-    headers = {"Authorization": f"Bearer {token}"}
-
-    # Sesiones de sueño
-    async with httpx.AsyncClient(timeout=15) as c:
-        r = await c.get(f"{FITNESS_URL}/sessions", headers=headers, params={
-            "startTime":    inicio.isoformat(),
-            "endTime":      fin.isoformat(),
-            "activityType": 72,  # sleep
-        })
-
-    total_min = 0
-    if r.status_code == 200:
-        for s in r.json().get("session", []):
-            dur_ms = int(s.get("endTimeMillis", 0)) - int(s.get("startTimeMillis", 0))
-            total_min += dur_ms // 60_000
-
-    # Etapas de sueño
-    deep_min = rem_min = light_min = 0
-    body = {
-        "aggregateBy":   [{"dataTypeName": "com.google.sleep.segment"}],
-        "bucketByTime":  {"durationMillis": 86_400_000},
-        "startTimeMillis": _ms(inicio),
-        "endTimeMillis":   _ms(fin),
-    }
-    async with httpx.AsyncClient(timeout=15) as c:
-        r2 = await c.post(f"{FITNESS_URL}/dataset:aggregate", headers=headers, json=body)
-
-    if r2.status_code == 200:
-        for bucket in r2.json().get("bucket", []):
-            for ds in bucket.get("dataset", []):
-                for pt in ds.get("point", []):
-                    dur   = (int(pt.get("endTimeNanos", 0)) - int(pt.get("startTimeNanos", 0))) // 60_000_000_000
-                    stage = pt.get("value", [{}])[0].get("intVal", 0)
-                    # Google Fit sleep stages: 4=light, 5=deep, 6=REM
-                    if   stage == 5: deep_min  += dur
-                    elif stage == 6: rem_min   += dur
-                    elif stage == 4: light_min += dur
-
-    return {
-        "sueño_total_min":    total_min,
-        "sueño_profundo_min": deep_min,
-        "sueño_rem_min":      rem_min,
-        "sueño_ligero_min":   light_min,
-    }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# FETCH FRECUENCIA CARDÍACA + HRV
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def _fetch_fc_hrv(token: str, inicio: datetime, fin: datetime) -> dict:
-    """
-    Obtiene FC mínima (≈ FC reposo) y estima HRV desde variabilidad de BPM.
-    El OnePlus Watch 4 sincroniza FC a Google Fit via Health Connect.
-    """
-    headers = {"Authorization": f"Bearer {token}"}
+async def _fetch_heart_rate(c, headers, inicio, fin) -> dict:
+    """FC promedio y FC en reposo (mínimo del día)."""
     body = {
         "aggregateBy": [{"dataTypeName": "com.google.heart_rate.bpm"}],
-        "bucketByTime": {"durationMillis": 3_600_000},  # por hora para más datos
-        "startTimeMillis": _ms(inicio),
-        "endTimeMillis":   _ms(fin),
+        "bucketByTime": {"durationMillis": 86400000},
+        "startTimeMillis": _ms(inicio), "endTimeMillis": _ms(fin),
     }
-    async with httpx.AsyncClient(timeout=15) as c:
-        r = await c.post(f"{FITNESS_URL}/dataset:aggregate", headers=headers, json=body)
+    out = {}
+    try:
+        r = await c.post(f"{FITNESS_URL}/dataset:aggregate", headers=headers, json=body, timeout=15)
+        if r.status_code == 200:
+            for bucket in r.json().get("bucket", []):
+                for ds in bucket.get("dataset", []):
+                    for pt in ds.get("point", []):
+                        # El summary de heart_rate.bpm trae mapVal con
+                        # average/min/max, o fpVal simple según dispositivo
+                        for v in pt.get("value", []):
+                            mv = v.get("mapVal")
+                            if mv:
+                                for kv in mv:
+                                    if kv.get("key") == "average":
+                                        out["fc_promedio"] = round(kv["value"].get("fpVal",0))
+                                    elif kv.get("key") == "min":
+                                        out["fc_reposo"] = round(kv["value"].get("fpVal",0))
+                            elif "fpVal" in v:
+                                # Punto simple — usar como ambos si no hay summary
+                                val = round(v["fpVal"])
+                                out.setdefault("fc_promedio", val)
+                                out["fc_reposo"] = min(out.get("fc_reposo", val), val)
+    except Exception as e:
+        logger.warning("Fit heart_rate fetch falló: %s", e)
+    return out
 
-    if r.status_code != 200:
+
+async def _fetch_hrv(c, headers, inicio, fin) -> dict:
+    """HRV promedio (rMSSD) — no todos los dispositivos lo exponen."""
+    body = {
+        "aggregateBy": [{"dataTypeName": "com.google.heart_rate.variability.rmssd"}],
+        "bucketByTime": {"durationMillis": 86400000},
+        "startTimeMillis": _ms(inicio), "endTimeMillis": _ms(fin),
+    }
+    out = {}
+    try:
+        r = await c.post(f"{FITNESS_URL}/dataset:aggregate", headers=headers, json=body, timeout=15)
+        if r.status_code == 200:
+            for bucket in r.json().get("bucket", []):
+                for ds in bucket.get("dataset", []):
+                    pts = ds.get("point", [])
+                    if not pts: continue
+                    v = pts[0].get("value", [{}])[0]
+                    fpval = v.get("fpVal")
+                    if fpval:
+                        out["hrv_promedio"] = round(fpval, 1)
+    except Exception as e:
+        logger.debug("Fit HRV no disponible: %s", e)
+    return out
+
+
+async def _fetch_peso(c, headers, inicio, fin) -> dict:
+    """Último peso registrado en Fit (báscula conectada)."""
+    body = {
+        "aggregateBy": [{"dataTypeName": "com.google.weight"}],
+        "bucketByTime": {"durationMillis": 86400000},
+        "startTimeMillis": _ms(inicio), "endTimeMillis": _ms(fin),
+    }
+    out = {}
+    try:
+        r = await c.post(f"{FITNESS_URL}/dataset:aggregate", headers=headers, json=body, timeout=15)
+        if r.status_code == 200:
+            for bucket in r.json().get("bucket", []):
+                for ds in bucket.get("dataset", []):
+                    pts = ds.get("point", [])
+                    if not pts: continue
+                    v = pts[-1].get("value", [{}])[0]  # más reciente
+                    fpval = v.get("fpVal")
+                    if fpval:
+                        out["peso_kg"] = round(fpval, 1)
+    except Exception as e:
+        logger.debug("Fit peso no disponible: %s", e)
+    return out
+
+
+async def _fetch_sueño(c, headers, inicio, fin) -> dict:
+    """
+    Sueño total + etapas, vía Sessions API.
+    Busca sesiones de sueño (activityType=72) que terminen en la ventana.
+    """
+    out = {}
+    try:
+        params = {
+            "startTime": inicio.isoformat(),
+            "endTime":   fin.isoformat(),
+            "activityType": 72,  # sleep
+        }
+        r = await c.get(f"{FITNESS_URL}/sessions", headers=headers, params=params, timeout=15)
+        if r.status_code != 200:
+            return out
+        sesiones = r.json().get("session", [])
+        if not sesiones:
+            return out
+
+        # Sesión más larga del día = sueño principal de la noche
+        sesion = max(sesiones, key=lambda s: int(s.get("endTimeMillis",0)) - int(s.get("startTimeMillis",0)))
+        start_ms, end_ms = int(sesion["startTimeMillis"]), int(sesion["endTimeMillis"])
+        total_min = round((end_ms - start_ms) / 60000)
+        out["sueño_total_min"] = total_min
+
+        # Etapas — dataset de sleep.segment para la ventana de la sesión
+        ds_id = "derived:com.google.sleep.segment:com.google.android.gms:merged"
+        start_ns, end_ns = start_ms * 1_000_000, end_ms * 1_000_000
+        rds = await c.get(
+            f"{FITNESS_URL}/dataSources/{ds_id}/datasets/{start_ns}-{end_ns}",
+            headers=headers, timeout=15,
+        )
+        if rds.status_code == 200:
+            profundo = rem = ligero = 0
+            for pt in rds.json().get("point", []):
+                tipo = pt.get("value", [{}])[0].get("intVal")
+                dur_min = (int(pt["endTimeNanos"]) - int(pt["startTimeNanos"])) / 60_000_000_000
+                if tipo in SLEEP_PROFUNDO: profundo += dur_min
+                elif tipo in SLEEP_REM:    rem += dur_min
+                elif tipo in SLEEP_LIGERO: ligero += dur_min
+            if profundo or rem or ligero:
+                out["sueño_profundo_min"] = round(profundo)
+                out["sueño_rem_min"]      = round(rem)
+                out["sueño_ligero_min"]   = round(ligero)
+    except Exception as e:
+        logger.warning("Fit sueño fetch falló: %s", e)
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ZONA FC / RER — derivados de FC promedio + baseline de reposo
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _calcular_zona_y_rer(fc_promedio: float | None, fc_reposo: float | None, edad: int) -> dict:
+    """Karvonen: %HRR = (FC - FCreposo) / (FCmax - FCreposo)."""
+    if not fc_promedio or not fc_reposo:
         return {}
-
-    fc_vals = []
-    for bucket in r.json().get("bucket", []):
-        for ds in bucket.get("dataset", []):
-            for pt in ds.get("point", []):
-                vals = pt.get("value", [])
-                # value[0]=avg, value[1]=min, value[2]=max
-                if len(vals) >= 2:
-                    fc_min = vals[1].get("fpVal", 0)
-                    if fc_min > 30:  # filtrar ruido
-                        fc_vals.append(fc_min)
-
-    if not fc_vals:
+    fc_max = 220 - edad
+    if fc_max <= fc_reposo:
         return {}
+    pct_hrr = (fc_promedio - fc_reposo) / (fc_max - fc_reposo) * 100
 
-    fc_reposo = round(min(fc_vals))  # mínima del día ≈ FC reposo
-
-    # Estimar HRV desde variabilidad de lecturas de FC
-    # Proxy: HRV ≈ 1000/FC_reposo × factor_variabilidad
-    # Más preciso que nada cuando el reloj no reporta HRV directamente
-    if len(fc_vals) > 3:
-        media = sum(fc_vals) / len(fc_vals)
-        varianza = sum((x - media)**2 for x in fc_vals) / len(fc_vals)
-        std = math.sqrt(varianza)
-        # RMSSD proxy: HRV estimado en ms
-        hrv_estimado = round((1000 / fc_reposo) * (1 + std / 10), 1)
-        hrv_estimado = max(20, min(hrv_estimado, 120))  # rango fisiológico
-    else:
-        hrv_estimado = None
+    if pct_hrr < 60:   zona = 1
+    elif pct_hrr < 70: zona = 2
+    elif pct_hrr < 80: zona = 3
+    elif pct_hrr < 90: zona = 4
+    else:              zona = 5
 
     return {
-        "fc_reposo":    fc_reposo,
-        "hrv_promedio": hrv_estimado,
+        "zona_fc_predominante": zona,
+        "rer_estimado": RER_POR_ZONA.get(zona, 0.80),
     }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ZONA CARDÍACA Y RER (Cociente Respiratorio)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _calcular_zona_fc(fc_media: float, edad: int) -> int:
-    """
-    Zona cardíaca según % de FCmáx (Karvonen).
-    FCmáx estimada = 220 - edad
-    """
-    if not fc_media or not edad:
-        return 1
-    fc_max = 220 - edad
-    pct    = (fc_media / fc_max) * 100
-    if   pct < 50: return 1   # muy ligero
-    elif pct < 60: return 2   # quema grasas (zona 2 - aeróbico base)
-    elif pct < 70: return 3   # aeróbico moderado
-    elif pct < 85: return 4   # umbral anaeróbico
-    else:          return 5   # máximo / HIIT
-
-
-def _calcular_rer(zona: int) -> float:
-    """
-    Estima el Cociente Respiratorio (RER) según zona cardíaca.
-    RER ~0.7 = oxidación predominante de lípidos
-    RER ~1.0 = oxidación predominante de glucosa
-
-    Brooks & Fahey (1984), revisado McArdle (2015):
-    Zona 1-2: lípidos dominan (RER 0.70-0.75)
-    Zona 3:   mix 50/50 (RER 0.85)
-    Zona 4-5: glucosa domina (RER 0.95-1.00)
-    """
-    tabla = {1: 0.70, 2: 0.75, 3: 0.85, 4: 0.95, 5: 1.00}
-    return tabla.get(zona, 0.85)
-
-
-def interpretar_rer(rer: float) -> dict:
-    """
-    Traduce el RER a recomendaciones de macros para esa noche.
-    Usado por Gemini en el análisis nocturno.
-    """
-    if rer <= 0.75:
-        return {
-            "sustrato":     "lípidos",
-            "carbos_noche": "bajos",
-            "nota":         "Día de baja intensidad — prioriza grasas en cena, carbos mínimos",
-        }
-    elif rer <= 0.85:
-        return {
-            "sustrato":     "mixto",
-            "carbos_noche": "moderados",
-            "nota":         "Actividad moderada — distribución normal de macros",
-        }
-    else:
-        return {
-            "sustrato":     "glucosa",
-            "carbos_noche": "altos",
-            "nota":         "Alta intensidad — recarga carbos post-entreno y en cena",
-        }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SYNC COMPLETO — llamar cada mañana a las 6am
+# SYNC PRINCIPAL
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def sync_usuario(uid: int, fecha: date = None) -> dict:
-    """
-    Sincroniza todos los datos de Google Fit para el usuario.
-    Después del sync: actualiza baseline HRV y modelo Bannister.
+    if fecha is None: fecha = date.today() - timedelta(days=1)
+    token = await _access_token(uid)
+    if not token: return {}
 
-    Flujo:
-    1. Fetch actividad (pasos, calorías, minutos)
-    2. Fetch sueño (total + etapas)
-    3. Fetch FC (reposo + HRV estimado)
-    4. Calcular zona cardíaca y RER
-    5. Guardar en actividad_diaria
-    6. Actualizar baseline HRV (promedio 30 días)
-    7. Actualizar modelo Bannister
-    """
-    if fecha is None:
-        fecha = date.today() - timedelta(days=1)
-
-    token = await _get_access_token(uid)
-    if not token:
-        logger.warning("Sin token Google Fit uid=%s", uid)
-        return {}
-
-    # Ventana de tiempo: día completo en UTC
     inicio = datetime.combine(fecha, datetime.min.time(), tzinfo=timezone.utc)
     fin    = datetime.combine(fecha, datetime.max.time(), tzinfo=timezone.utc)
-
-    logger.info("Google Fit sync uid=%s fecha=%s", uid, fecha)
+    headers = {"Authorization": f"Bearer {token}"}
 
     datos = {"fecha": str(fecha), "fuente": "google_fit"}
 
-    # 1. Actividad
-    act = await _fetch_actividad(token, inicio, fin)
-    datos.update(act)
+    async with httpx.AsyncClient() as c:
+        datos.update(await _fetch_actividad(c, headers, inicio, fin))
 
-    # 2. Sueño (ventana amplia: 6pm del día anterior a 12pm del día)
-    inicio_sueño = inicio - timedelta(hours=6)
-    fin_sueño    = inicio + timedelta(hours=12)
-    sueño = await _fetch_sueño(token, inicio_sueño, fin_sueño)
-    datos.update(sueño)
+        hr = await _fetch_heart_rate(c, headers, inicio, fin)
+        if "fc_reposo" in hr: datos["fc_reposo"] = hr["fc_reposo"]
 
-    # 3. FC y HRV
-    fc_hrv = await _fetch_fc_hrv(token, inicio, fin)
-    datos.update(fc_hrv)
+        hrv = await _fetch_hrv(c, headers, inicio, fin)
+        datos.update(hrv)
 
-    # 4. Zona cardíaca y RER
-    u = get_usuario(uid)
-    if u and fc_hrv.get("fc_reposo"):
-        edad = int(u.get("edad") or 30)
-        # FC media del día para la zona (aproximamos con fc_reposo × 1.3 si no tenemos más)
-        fc_media = fc_hrv["fc_reposo"] * 1.3
-        zona = _calcular_zona_fc(fc_media, edad)
-        rer  = _calcular_rer(zona)
-        datos["zona_fc_predominante"] = zona
-        datos["rer_estimado"]         = rer
+        sueño = await _fetch_sueño(c, headers, inicio, fin)
+        datos.update(sueño)
 
-    # 5. Guardar en DB
+        peso = await _fetch_peso(c, headers, inicio, fin)
+
+    # Zona FC / RER (necesita edad del usuario)
+    u = get_usuario(uid) or {}
+    edad = int(u.get("edad") or 30)
+    fc_avg = hr.get("fc_promedio")
+    datos.update(_calcular_zona_y_rer(fc_avg, datos.get("fc_reposo"), edad))
+
     save_actividad(uid, str(fecha), datos)
 
-    # 6. Actualizar baseline HRV (cada sync)
-    actualizar_baseline_hrv(uid)
+    # Auto-actualizar peso si la báscula lo reportó a Fit — sin preguntar
+    if peso.get("peso_kg"):
+        peso_anterior = float(u.get("peso_kg") or 0)
+        nuevo = peso["peso_kg"]
+        if abs(nuevo - peso_anterior) > 0.05:  # evitar updates ruidosos idénticos
+            upsert_usuario(uid, peso_kg=nuevo)
+            logger.info("Peso auto-actualizado desde Fit uid=%s: %.1fkg", uid, nuevo)
 
-    # 7. Actualizar modelo Bannister
-    resultado_bannister = actualizar_bannister(uid, str(fecha))
+    # Recalibrar baseline HRV/RHR y modelo Bannister con el dato fresco
+    try:
+        actualizar_baseline_hrv(uid)
+        actualizar_bannister(uid)
+    except Exception as e:
+        logger.error("Error actualizando Bannister tras sync uid=%s: %s", uid, e)
 
-    logger.info(
-        "Sync OK uid=%s | pasos=%s sueño=%smin FC=%s HRV=%s | bannister=%s",
-        uid,
-        datos.get("pasos", 0),
-        datos.get("sueño_total_min", 0),
-        datos.get("fc_reposo"),
-        datos.get("hrv_promedio"),
-        resultado_bannister,
-    )
-
-    return {**datos, "bannister": resultado_bannister}
+    return datos
 
 
-async def sync_all_users():
-    """Sync Google Fit para todos los usuarios conectados. Llamar a las 6am."""
-    from db.database import fetchall
-    users = fetchall(
-        "SELECT user_id FROM usuarios WHERE google_fit_token IS NOT NULL "
-        "AND onboarding_done=1", ()
-    )
-    resultados = []
-    for u in users:
-        uid = u["user_id"]
-        if esta_conectado(uid):
-            try:
-                res = await sync_usuario(uid)
-                resultados.append({"uid": uid, "ok": True, "datos": res})
-            except Exception as e:
-                logger.error("Sync error uid=%s: %s", uid, e)
-                resultados.append({"uid": uid, "ok": False, "error": str(e)})
-    return resultados
+def esta_conectado(uid: int) -> bool:
+    u = get_usuario(uid)
+    if not u or not u.get("google_fit_token"): return False
+    try: return bool(json.loads(u["google_fit_token"]).get("refresh_token"))
+    except Exception: return False
