@@ -1,35 +1,36 @@
 """
-bot/handlers/gym.py — Invisible Coach v4.0 (Sesión 12)
+bot/handlers/gym.py — Invisible Coach v4.1 (Fase 1 fix)
 
-Sesión de gym con tap-only para pesos.
-
-Cambios v4.0:
-  - Botón "← Anterior" funcional en cada ejercicio (navegación real)
-  - Calentamiento SIEMPRE visible en el primer ejercicio (antes solo si
-    había historial de pesos — ahora usa un peso inicial sensato si es
-    la primera vez)
-  - Cardio visible: en el preview de la rutina y como paso final de la
-    sesión (con su propia pantalla Hecho/Saltar)
-  - Eliminados botones muertos "🔄 Cambiar" / "✏️ Otro peso" (ej_manual:
-    y swp: nunca estaban ruteados)
-  - Primera vez: peso inicial sensato (45 lbs barra vacía para
-    compuestos, 10 lbs para accesorios) + stepper +/-, no más tabla
-    fija de pesos de barra
+Fixes:
+  - Stepper: 3 botones -20/-10/-5 / peso / +5/+10/+20 (2 filas)
+  - Calentamiento siempre visible en ejercicio 1 (incluso tras ← Anterior)
+  - Cardio visible en preview Y como paso final de la sesión
+  - Peso guardado entre sesiones: muestra el último peso usado como base
+  - RIR explicado en lenguaje simple ("te quedan ~N reps en el tanque")
+  - handle_prev registrado y funcional
 """
 from __future__ import annotations
 import logging
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ContextTypes
-from db.database import (get_ejercicios_dia, get_peso_sugerido, save_peso,
-                          save_sesion, marcar_completado, avanzar_dia, set_estado)
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from db.database import (get_ejercicios_dia, get_peso_sugerido, get_historial_peso,
+                          save_peso, save_sesion, marcar_completado,
+                          avanzar_dia, set_estado)
 from bot.keyboards import kb_feedback_sesion, BTN_MENU
-from engine.gym.catalog import BY_ID
 
 logger = logging.getLogger(__name__)
-COMPUESTOS = {"sentadilla","press_horizontal","press_inclinado","press_vertical",
-              "bisagra_cadera","remo_horizontal","jalon_vertical","peso_muerto"}
 
-CARDIO_ICON = "🚴"
+CARDIO_ICON = "Cardio"
+COMPUESTOS  = {"sentadilla","press_horizontal","press_inclinado","press_vertical",
+               "bisagra_cadera","remo_horizontal","jalon_vertical","peso_muerto"}
+
+RIR_TEXTO = {
+    0: "al fallo — máxima intensidad",
+    1: "te queda 1 rep en el tanque",
+    2: "te quedan ~2 reps en el tanque",
+    3: "te quedan ~3 reps en el tanque",
+    4: "esfuerzo moderado-alto",
+    5: "esfuerzo moderado — día de volumen",
+}
 
 
 def _inc(patron: str) -> float:
@@ -37,7 +38,6 @@ def _inc(patron: str) -> float:
 
 
 def _default_peso(patron: str) -> float:
-    """Peso inicial sensato cuando no hay historial — primera sesión."""
     return 45.0 if patron in COMPUESTOS else 10.0
 
 
@@ -48,57 +48,87 @@ def _split_rows(uid: int, semana: int, dia: str):
     return fuerza, cardio
 
 
-def _calentamiento_texto(ej: dict, peso_mostrar: float, es_inicial: bool) -> str:
-    """Calentamiento — siempre visible en el primer ejercicio."""
+def _get_peso_base(uid: int, ej: dict) -> tuple[float, bool]:
+    """
+    Retorna (peso_a_mostrar, es_inicial).
+    Primero intenta el historial real (última sesión), luego el peso sugerido
+    por doble progresión, luego el default por patrón.
+    """
+    # Historial real — peso más reciente usado en este ejercicio
+    hist = get_historial_peso(uid, ej["ejercicio_id"], 1)
+    if hist and float(hist[0].get("peso_lbs", 0)) > 0:
+        return float(hist[0]["peso_lbs"]), False
+
+    # Peso sugerido por doble progresión
+    sug = get_peso_sugerido(uid, ej["ejercicio_id"], ej.get("reps","8-10"), ej.get("patron",""))
+    if sug and float(sug) > 0:
+        return float(sug), False
+
+    # Primera vez — default sensato
+    return _default_peso(ej.get("patron","")), True
+
+
+def _calentamiento_texto(ej: dict, peso: float, es_inicial: bool) -> str:
     GRUPOS = {
-        "pierna":  "5 min bici suave + sentadilla sin peso 2×15",
-        "empuje":  "Fondos asistidos o flexiones 2×10 + elevaciones vacías 2×15",
-        "tiron":   "Jalón con poco peso 2×10 + face pull ligero 2×15",
-        "gluteo":  "Hip thrust sin peso 2×15 + clamshell 2×15",
-        "core":    "Movilidad de cadera y columna 5 min",
+        "pierna":  "5 min bici suave + sentadilla sin peso 2x15",
+        "empuje":  "Fondos o flexiones 2x10 + elevaciones vacias 2x15",
+        "tiron":   "Jalon ligero 2x10 + face pull 2x15",
+        "gluteo":  "Hip thrust sin peso 2x15 + clamshell 2x15",
+        "core":    "Movilidad cadera y columna 5 min",
     }
     base = GRUPOS.get(ej.get("grupo",""), "5 min movimiento ligero + articulaciones")
 
     if ej.get("patron","") in COMPUESTOS:
-        p = peso_mostrar
-        p40 = max(round(p*0.40/5)*5, 0)
-        p60 = max(round(p*0.60/5)*5, 0)
-        p80 = max(round(p*0.80/5)*5, 0)
-        nota = " <i>(estimado — primera vez)</i>" if es_inicial else ""
-        return (f"\n🔥 <b>Calentamiento:</b> {base}\n"
-                f"   Con barra: {p40}×10 → {p60}×5 → {p80}×3{nota}\n")
-    else:
-        return (f"\n🔥 <b>Calentamiento:</b> {base}\n"
-                f"   1-2 series ligeras (50-60% del peso) antes de ir a la carga de trabajo\n")
+        p40 = max(round(peso * 0.40 / 5) * 5, 0)
+        p60 = max(round(peso * 0.60 / 5) * 5, 0)
+        p80 = max(round(peso * 0.80 / 5) * 5, 0)
+        nota = " (estimado - ajusta)" if es_inicial else ""
+        return (f"\nCalentamiento: {base}\n"
+                f"  Con barra: {p40}x10 -> {p60}x5 -> {p80}x3{nota}\n")
+    return f"\nCalentamiento: {base}\n  1-2 series al 50-60% antes de la carga de trabajo\n"
 
 
-def _kb_ejercicio_v2(semana: int, dia: str, idx: int, peso: float,
-                      eid: str, inc: float) -> InlineKeyboardMarkup:
+def _kb_stepper(semana: int, dia: str, idx: int, peso: float, es_compuesto: bool) -> InlineKeyboardMarkup:
+    """
+    2 filas de steppers: -20/-10/-5 | peso | +5/+10/+20
+    Fila 2: Hecho | Saltar
+    Fila 3: Anterior | Menu
+    """
     s, d, i = semana, dia, idx
-    p_m = round(max(peso - inc, 0), 1)
-    p_p = round(peso + inc, 1)
+
+    def btn_p(delta: float) -> InlineKeyboardButton:
+        nuevo = round(max(peso + delta, 0), 1)
+        signo = "+" if delta > 0 else ""
+        label = f"{signo}{delta:g}"
+        return InlineKeyboardButton(label, callback_data=f"pw:{s}:{d}:{i}:{nuevo}")
+
     rows = [
-        [InlineKeyboardButton(f"−{inc:.0f}", callback_data=f"pw:{s}:{d}:{i}:{p_m}"),
-         InlineKeyboardButton(f"💪 {peso:.1f} lbs", callback_data=f"pw:{s}:{d}:{i}:{peso}"),
-         InlineKeyboardButton(f"+{inc:.0f}", callback_data=f"pw:{s}:{d}:{i}:{p_p}")],
-        [InlineKeyboardButton(f"✅ Hecho — {peso:.1f} lbs", callback_data=f"ej_ok:{s}:{d}:{i}:{peso}")],
+        # Fila 1: decrementos
+        [btn_p(-20), btn_p(-10), btn_p(-5)],
+        # Fila 2: peso actual (display) + incrementos
+        [InlineKeyboardButton(f"{peso:g} lbs", callback_data=f"pw:{s}:{d}:{i}:{peso}"),
+         btn_p(+5), btn_p(+10), btn_p(+20)],
+        # Fila 3: confirmar
+        [InlineKeyboardButton(f"Hecho — {peso:g} lbs", callback_data=f"ej_ok:{s}:{d}:{i}:{peso}")],
     ]
+
     nav = []
     if i > 0:
-        nav.append(InlineKeyboardButton("← Anterior", callback_data=f"prev:{s}:{d}:{i}"))
-    nav.append(InlineKeyboardButton("⏭ Saltar", callback_data=f"ej_ok:{s}:{d}:{i}:0"))
-    nav.append(InlineKeyboardButton("🏠", callback_data="m:main"))
+        nav.append(InlineKeyboardButton("Atras", callback_data=f"prev:{s}:{d}:{i}"))
+    nav.append(InlineKeyboardButton("Saltar", callback_data=f"ej_ok:{s}:{d}:{i}:0"))
+    nav.append(InlineKeyboardButton("Menu", callback_data="m:main"))
     rows.append(nav)
+
     return InlineKeyboardMarkup(rows)
 
 
-def _kb_cardio(semana: int, dia: str, idx_cardio: int) -> InlineKeyboardMarkup:
-    s, d, i = semana, dia, idx_cardio
+def _kb_cardio(semana: int, dia: str, idx: int) -> InlineKeyboardMarkup:
+    s, d, i = semana, dia, idx
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Hecho", callback_data=f"ej_ok:{s}:{d}:{i}:0")],
-        [InlineKeyboardButton("← Anterior", callback_data=f"prev:{s}:{d}:{i}"),
-         InlineKeyboardButton("⏭ Saltar",   callback_data=f"ej_ok:{s}:{d}:{i}:-1"),
-         InlineKeyboardButton("🏠",          callback_data="m:main")],
+        [InlineKeyboardButton("Hecho", callback_data=f"ej_ok:{s}:{d}:{i}:0")],
+        [InlineKeyboardButton("Atras",  callback_data=f"prev:{s}:{d}:{i}"),
+         InlineKeyboardButton("Saltar", callback_data=f"ej_ok:{s}:{d}:{i}:-1"),
+         InlineKeyboardButton("Menu",   callback_data="m:main")],
     ])
 
 
@@ -106,58 +136,64 @@ def _render_ejercicio(uid: int, semana: int, dia: str, idx: int) -> tuple[str, o
     fuerza, cardio = _split_rows(uid, semana, dia)
     total = len(fuerza)
 
-    # ── Paso de cardio (después del último ejercicio de fuerza) ──────────────
+    # ── Paso de cardio ────────────────────────────────────────────────────────
     if idx == total and cardio:
         c = cardio[0]
+        duracion = c.get("reps","20min")
         texto = (
-            f"<b>{CARDIO_ICON} Cardio — {c['ejercicio']}</b>\n"
-            f"Duración: {c.get('reps','20min')}\n"
+            f"<b>{CARDIO_ICON} — {c['ejercicio']}</b>\n"
+            f"Duracion: {duracion}\n"
+            f"Zona 2 — mantente a un ritmo donde puedas hablar con esfuerzo"
         )
         if c.get("notas"):
-            texto += f"\n💡 <i>{c['notas'][:100]}</i>"
+            texto += f"\n\n{c['notas'][:100]}"
         return texto, _kb_cardio(semana, dia, idx)
 
-    # ── Fin de sesión (no más ejercicios ni cardio) ──────────────────────────
+    # ── Fin de sesion ─────────────────────────────────────────────────────────
     if idx >= total + (1 if cardio else 0):
         return _fin_sesion(uid, semana, dia)
 
-    # ── Ejercicio de fuerza ────────────────────────────────────────────────
+    # ── Ejercicio de fuerza ───────────────────────────────────────────────────
     ej = fuerza[idx]
-    inc = _inc(ej.get("patron",""))
-    peso_real = get_peso_sugerido(uid, ej["ejercicio_id"], ej.get("reps","8-10"), ej.get("patron",""))
-    es_inicial = not bool(peso_real)
-    peso_mostrar = float(peso_real) if peso_real else _default_peso(ej.get("patron",""))
+    peso, es_inicial = _get_peso_base(uid, ej)
+    es_compuesto     = ej.get("patron","") in COMPUESTOS
+    rir              = ej.get("rir_objetivo", 2)
+    rir_txt          = RIR_TEXTO.get(rir, f"RIR {rir}")
 
-    cal_str = _calentamiento_texto(ej, peso_mostrar, es_inicial) if idx == 0 else ""
+    # Calentamiento solo en el primer ejercicio
+    cal_str = _calentamiento_texto(ej, peso, es_inicial) if idx == 0 else ""
 
+    # Cue tecnico en el primer ejercicio
     cue_str = ""
     if idx == 0 and ej.get("notas"):
-        cue_str = f"\n💡 <i>{ej['notas'][:70]}</i>"
+        cue_str = f"\n<i>{ej['notas'][:80]}</i>"
 
-    resto = [fuerza[j]["ejercicio"][:25] for j in range(idx+1, min(idx+4, total))]
-    if cardio and idx+1 >= total:
-        resto.append(f"{CARDIO_ICON} {cardio[0]['ejercicio'][:25]}")
-    resto_str = f"\n\n<b>Falta:</b>\n" + "\n".join(f"· {e}" for e in resto) if resto else ""
+    # Proximos ejercicios
+    resto = [fuerza[j]["ejercicio"][:28] for j in range(idx+1, min(idx+4, total))]
+    if cardio and idx + 1 >= total:
+        resto.append(f"{CARDIO_ICON}: {cardio[0]['ejercicio'][:20]}")
+    resto_str = ("\n\nSigue:\n" + "\n".join(f"  {e}" for e in resto)) if resto else ""
 
-    inicial_str = "\n<i>Primera vez — ajusta el peso a lo que se sienta correcto</i>" if es_inicial else ""
+    inicial_str = "\n<i>Primera vez — ajusta a lo que se sienta bien (RIR honesto)</i>" if es_inicial else ""
 
     texto = (
         f"<b>{idx+1}/{total} — {ej['ejercicio']}</b>\n"
-        f"{ej['series']} series × {ej['reps']} reps · RIR {ej.get('rir_objetivo',2)}"
+        f"{ej['series']} series x {ej['reps']} reps\n"
+        f"Intensidad: {rir_txt}"
         f"{cue_str}"
         f"{cal_str}"
         f"{inicial_str}"
         f"{resto_str}"
     )
 
-    kb = _kb_ejercicio_v2(semana, dia, idx, peso_mostrar, ej["ejercicio_id"], inc)
+    kb = _kb_stepper(semana, dia, idx, peso, es_compuesto)
     return texto, kb
 
 
 def _fin_sesion(uid: int, semana: int, dia: str) -> tuple[str, object]:
     marcar_completado(uid, semana, dia)
     return (
-        "🏁 <b>¡Sesión completada!</b>\n\n¿Cómo estuvo?",
+        "Sesion completada!\n\nComo estuvo?",
         kb_feedback_sesion(semana, dia)
     )
 
@@ -168,47 +204,55 @@ async def handle_rutina_preview(uid: int, semana: int, dia: str, query=None, msg
     if not fuerza:
         import random
         RECOVERY = [
-            "🧘 Movilidad 15 min — caderas, hombros, columna",
-            "🚶 Caminata 20-30 min a ritmo cómodo (Zona 1)",
-            "🚴 Bici suave 20-25 min — FC < 110 bpm",
-            "🎯 Core: plancha 3×30s · dead bug 3×10 · bird dog 3×10",
-            "🤸 Yoga restaurativo 15 min",
+            "Movilidad 15 min — caderas, hombros, columna",
+            "Caminata 20-30 min a ritmo comodo (Zona 1)",
+            "Bici suave 20-25 min — FC menor a 110 bpm",
+            "Core: plancha 3x30s + dead bug 3x10 + bird dog 3x10",
         ]
+        u_recovery = random.choice(RECOVERY)
+        from db.database import get_usuario
+        u = get_usuario(uid) or {}
+        ra = u.get("recuperacion_activa","caminar")
         texto = (
-            f"🌿 <b>Hoy: Descanso activo</b>\n\n"
-            f"{random.choice(RECOVERY)}\n\n"
-            f"<i>El músculo crece hoy — proteína alta y 7-9h de sueño.</i>"
+            f"Hoy: Descanso activo\n\n"
+            f"Recomendado para ti ({ra.split(',')[0]}): {u_recovery}\n\n"
+            f"El musculo crece hoy — proteina alta y 7-9h de sueno."
         )
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menú", callback_data="m:main")]])
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Menu", callback_data="m:main")]])
     else:
-        GRUPOS_ICON = {"empuje":"💪","tiron":"🏋️","pierna":"🦵","gluteo":"🍑","core":"🎯"}
+        GRUPOS_ICON = {"empuje":"Empuje","tiron":"Tiron","pierna":"Pierna",
+                       "gluteo":"Gluteo","core":"Core"}
         grupo = fuerza[0].get("grupo","")
-        icon  = GRUPOS_ICON.get(grupo,"💪")
+        label = GRUPOS_ICON.get(grupo, grupo.upper())
         dur_cardio = 0
         if cardio:
-            try: dur_cardio = int(str(cardio[0].get("reps","20")).replace("min",""))
+            try: dur_cardio = int(str(cardio[0].get("reps","20")).replace("min","").strip())
             except ValueError: dur_cardio = 20
         dur = len(fuerza) * 18 + dur_cardio
 
         lineas = []
         for i, ej in enumerate(fuerza):
-            sug = get_peso_sugerido(uid, ej["ejercicio_id"], ej.get("reps","8-10"), ej.get("patron",""))
-            sug_str = f" → <i>{sug} lbs</i>" if sug else ""
-            lineas.append(f"{i+1}. {ej['ejercicio']}  {ej['series']}×{ej['reps']}{sug_str}")
+            hist = get_historial_peso(uid, ej["ejercicio_id"], 1)
+            if hist and float(hist[0].get("peso_lbs",0)) > 0:
+                sug_str = f"  {float(hist[0]['peso_lbs']):g} lbs"
+            else:
+                sug = get_peso_sugerido(uid, ej["ejercicio_id"], ej.get("reps","8-10"), ej.get("patron",""))
+                sug_str = f"  {sug} lbs" if sug else ""
+            lineas.append(f"{i+1}. {ej['ejercicio']}  {ej['series']}x{ej['reps']}{sug_str}")
 
         if cardio:
             c = cardio[0]
-            lineas.append(f"{len(fuerza)+1}. {CARDIO_ICON} {c['ejercicio']}  {c.get('reps','20min')}")
+            lineas.append(f"{len(fuerza)+1}. {CARDIO_ICON}: {c['ejercicio']}  {c.get('reps','20min')}")
 
         texto = (
-            f"S{semana} · {dia.capitalize()} {icon} {grupo.upper()}  ~{dur} min\n\n"
+            f"S{semana} - {dia.capitalize()} - {label}  ~{dur} min\n\n"
             f"<b>Rutina de hoy:</b>\n" + "\n".join(lineas) + "\n\n"
-            f"Revisa los pesos y toca <b>Empezar</b> cuando estés listo 👇"
+            f"Revisa los pesos y toca Empezar cuando estes listo"
         )
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("▶️ Empezar sesión", callback_data=f"ej_start:{semana}:{dia}")],
-            [InlineKeyboardButton("⏭ Saltar este día", callback_data=f"skip:{semana}:{dia}"),
-             InlineKeyboardButton("🏠 Menú",           callback_data="m:main")],
+            [InlineKeyboardButton("Empezar sesion", callback_data=f"ej_start:{semana}:{dia}")],
+            [InlineKeyboardButton("Saltar este dia", callback_data=f"skip:{semana}:{dia}"),
+             InlineKeyboardButton("Menu",            callback_data="m:main")],
         ])
 
     if query:
@@ -228,7 +272,7 @@ async def handle_ej_start(query, uid: int, context):
 
 
 async def handle_prev(query, uid: int, context):
-    """← Anterior — vuelve al ejercicio/cardio anterior sin perder progreso."""
+    """Atras — vuelve al ejercicio anterior sin perder progreso."""
     parts = query.data.split(":")
     sem, dia, idx = int(parts[1]), parts[2], int(parts[3])
     anterior = max(idx - 1, 0)
@@ -239,49 +283,49 @@ async def handle_prev(query, uid: int, context):
 
 
 async def handle_pw(query, uid: int, context):
-    """Ajuste de peso con +/- — solo actualiza display."""
+    """Ajuste de peso — actualiza display con el nuevo valor."""
     parts = query.data.split(":")
     sem, dia, idx, peso = int(parts[1]), parts[2], int(parts[3]), float(parts[4])
-    peso = max(0, peso)
+    peso = max(0.0, peso)
     fuerza, cardio = _split_rows(uid, sem, dia)
-    if idx >= len(fuerza): return
+    if idx >= len(fuerza):
+        return
+
     ej = fuerza[idx]
-    inc = _inc(ej.get("patron",""))
+    es_compuesto = ej.get("patron","") in COMPUESTOS
+    rir  = ej.get("rir_objetivo", 2)
 
-    cal_str = ""
-    cue_str = ""
-    if idx == 0:
-        cal_str = _calentamiento_texto(ej, peso, False)
-        if ej.get("notas"):
-            cue_str = f"\n💡 <i>{ej['notas'][:70]}</i>"
+    # Calentamiento siempre en idx==0, recalculado con el nuevo peso
+    cal_str = _calentamiento_texto(ej, peso, False) if idx == 0 else ""
+    cue_str = f"\n<i>{ej['notas'][:80]}</i>" if idx == 0 and ej.get("notas") else ""
 
-    resto = [fuerza[j]["ejercicio"][:25] for j in range(idx+1, min(idx+4,len(fuerza)))]
+    resto = [fuerza[j]["ejercicio"][:28] for j in range(idx+1, min(idx+4, len(fuerza)))]
     if cardio and idx+1 >= len(fuerza):
-        resto.append(f"{CARDIO_ICON} {cardio[0]['ejercicio'][:25]}")
-    resto_str = ("\n\n<b>Falta:</b>\n" + "\n".join(f"· {e}" for e in resto)) if resto else ""
+        resto.append(f"{CARDIO_ICON}: {cardio[0]['ejercicio'][:20]}")
+    resto_str = ("\n\nSigue:\n" + "\n".join(f"  {e}" for e in resto)) if resto else ""
 
+    rir_txt = RIR_TEXTO.get(rir, f"RIR {rir}")
     texto = (
         f"<b>{idx+1}/{len(fuerza)} — {ej['ejercicio']}</b>\n"
-        f"{ej['series']} series × {ej['reps']} reps · RIR {ej.get('rir_objetivo',2)}"
+        f"{ej['series']} series x {ej['reps']} reps\n"
+        f"Intensidad: {rir_txt}"
         f"{cue_str}{cal_str}{resto_str}"
     )
-    kb = _kb_ejercicio_v2(sem, dia, idx, peso, ej["ejercicio_id"], inc)
+    kb = _kb_stepper(sem, dia, idx, peso, es_compuesto)
     try: await query.edit_message_text(texto, reply_markup=kb, parse_mode="HTML")
     except Exception: pass
 
 
 async def handle_ej_ok(query, uid: int, context):
-    """Confirma peso/cardio y avanza al siguiente paso."""
+    """Confirma peso y avanza al siguiente paso."""
     parts = query.data.split(":")
     sem, dia, idx, peso = int(parts[1]), parts[2], int(parts[3]), float(parts[4])
     fuerza, cardio = _split_rows(uid, sem, dia)
 
-    # idx < len(fuerza): ejercicio de fuerza — guardar peso si es válido (peso>0)
+    # Guardar peso si es ejercicio de fuerza con peso valido
     if idx < len(fuerza) and peso > 0:
         ej = fuerza[idx]
         save_peso(uid, ej["ejercicio_id"], sem, dia, peso, ej.get("reps"), ej.get("series"))
-
-    # idx == len(fuerza): paso de cardio — peso=0 (Hecho) o -1 (Saltar), no se guarda nada
 
     siguiente = idx + 1
     context.user_data["sesion"] = {"semana": sem, "dia": dia, "idx": siguiente}
@@ -291,24 +335,24 @@ async def handle_ej_ok(query, uid: int, context):
 
 
 async def handle_fb(query, uid: int):
-    """Feedback de sesión — RIR y fatiga."""
+    """Feedback de sesion — RIR y fatiga."""
     parts = query.data.split(":")
     sem, dia, rir, fatiga = int(parts[1]), parts[2], int(parts[3]), int(parts[4])
     save_sesion(uid, sem, dia, completada=1, fatiga_global=fatiga, rir_promedio=rir)
     nueva_sem, nuevo_dia = avanzar_dia(uid, sem, dia)
     set_estado(uid, nueva_sem, nuevo_dia)
     sueño_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("😫 <6h",  callback_data=f"sue:{sem}:{dia}:5.5"),
-         InlineKeyboardButton("😊 6-7h", callback_data=f"sue:{sem}:{dia}:6.5")],
-        [InlineKeyboardButton("✅ 7-8h", callback_data=f"sue:{sem}:{dia}:7.5"),
-         InlineKeyboardButton("🌟 8h+",  callback_data=f"sue:{sem}:{dia}:8.5")],
-        [InlineKeyboardButton("Saltar →", callback_data="m:hoy")],
+        [InlineKeyboardButton("menos de 6h", callback_data=f"sue:{sem}:{dia}:5.5"),
+         InlineKeyboardButton("6-7h",        callback_data=f"sue:{sem}:{dia}:6.5")],
+        [InlineKeyboardButton("7-8h",        callback_data=f"sue:{sem}:{dia}:7.5"),
+         InlineKeyboardButton("8h+",         callback_data=f"sue:{sem}:{dia}:8.5")],
+        [InlineKeyboardButton("Saltar",      callback_data="m:hoy")],
     ])
     try:
         await query.edit_message_text(
-            "💾 Guardado ✅\n\n😴 <b>¿Cuántas horas dormiste anoche?</b>\n"
-            "<i>El sueño es donde crece el músculo. Gemini lo usa en el análisis.</i>",
-            reply_markup=sueño_kb, parse_mode="HTML")
+            "Guardado\n\nCuantas horas dormiste anoche?\n"
+            "El sueno es donde crece el musculo.",
+            reply_markup=sueño_kb)
     except Exception: pass
 
 
@@ -317,15 +361,13 @@ async def handle_sue(query, uid: int):
     horas = float(parts[3])
     from db.database import upsert_usuario
     upsert_usuario(uid, sueño_horas=horas)
-    aviso = ""
-    if horas < 6: aviso = "\n⚠️ Menos de 6h afecta la síntesis proteica y la recuperación muscular."
+    aviso = "\nMenos de 6h reduce la sintesis proteica un 30%." if horas < 6 else ""
     try:
         await query.edit_message_text(
-            f"✅ {horas}h registradas.{aviso}\n\nEl análisis llega esta noche 🧠",
+            f"{horas}h registradas.{aviso}\n\nEl analisis llega esta noche.",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("💪 Ver siguiente sesión", callback_data="m:hoy")
-            ]]),
-            parse_mode="HTML")
+                InlineKeyboardButton("Ver siguiente sesion", callback_data="m:hoy")
+            ]]))
     except Exception: pass
 
 
@@ -334,5 +376,8 @@ async def handle_skip(query, uid: int):
     sem, dia = int(parts[1]), parts[2]
     nueva_sem, nuevo_dia = avanzar_dia(uid, sem, dia)
     set_estado(uid, nueva_sem, nuevo_dia)
-    await query.edit_message_text("Día saltado 👍\n\nToca 💪 Rutina de hoy cuando estés listo.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menú", callback_data="m:main")]]))
+    await query.edit_message_text(
+        "Dia saltado.\n\nToca Rutina de hoy cuando estes listo.",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("Menu", callback_data="m:main")
+        ]]))
