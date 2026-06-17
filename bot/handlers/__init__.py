@@ -10,6 +10,7 @@ from .menu import (cmd_start, cmd_reset_plan, cmd_login, cmd_conectar_fit,
                    cmd_adduser, handler_texto, handle_menu, handle_rst, handle_horario)
 from .onboarding import (
     handle_bienvenida, handle_wear_init, handle_wear_check, handle_prefill,
+    handle_bloque,
     handle_ob, handle_cal, handle_num, handle_sexo,
     handle_nv, handle_dy, handle_dur, handle_gym_hora, handle_am, handle_lm,
     handle_dt, handle_cocina, handle_n_comidas, handle_t_comida,
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Prefijos que no requieren estar en lista de permitidos
 ONBOARDING_PREFIXES = (
-    "bienvenida:", "wear_init:", "wear_check:", "prefill:",
+    "bienvenida:", "wear_init:", "wear_check:", "prefill:", "bloque:",
     "ob:", "cal:", "num:", "sexo:",
     "nv:", "dy:", "dur:", "gym_hora:", "am:", "lm:",
     "dt:", "cocina:", "n_comidas:", "t_comida:",
@@ -63,6 +64,7 @@ async def callback_router(update, context):
         elif data.startswith("wear_init:"):  await handle_wear_init(query, uid, context)
         elif data.startswith("wear_check:"): await handle_wear_check(query, uid, context)
         elif data.startswith("prefill:"):    await handle_prefill(query, uid, context)
+        elif data.startswith("bloque:"):     await handle_bloque(query, uid, context)
 
         # ── Onboarding — Bloque 1 ─────────────────────────────────────────────
         elif data.startswith("ob:"):         await handle_ob(query, uid, context)
