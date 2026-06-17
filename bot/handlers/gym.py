@@ -244,9 +244,15 @@ async def handle_rutina_preview(uid: int, semana: int, dia: str, query=None, msg
             c = cardio[0]
             lineas.append(f"{len(fuerza)+1}. {CARDIO_ICON}: {c['ejercicio']}  {c.get('reps','20min')}")
 
+        # Calentamiento — preview del que verás al iniciar
+        primer_ej = fuerza[0]
+        peso_warmup, _ = _get_peso_base(uid, primer_ej)
+        cal_preview = _calentamiento_texto(primer_ej, peso_warmup, False).strip()
+
         texto = (
             f"S{semana} - {dia.capitalize()} - {label}  ~{dur} min\n\n"
             f"<b>Rutina de hoy:</b>\n" + "\n".join(lineas) + "\n\n"
+            f"{cal_preview}\n\n"
             f"Revisa los pesos y toca Empezar cuando estes listo"
         )
         kb = InlineKeyboardMarkup([
