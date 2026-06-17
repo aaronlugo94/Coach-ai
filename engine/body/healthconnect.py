@@ -73,6 +73,15 @@ async def exchange_code(code: str, uid: int) -> bool:
     data = r.json()
     data["expires_at"] = (datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in",3600))).isoformat()
     upsert_usuario(uid, google_fit_token=json.dumps(data))
+
+    # Sync historico inmediato — ultimos 30 dias de actividad + pesajes
+    try:
+        for i in range(30):
+            fecha = date.today() - timedelta(days=i)
+            await sync_usuario(uid, fecha)
+    except Exception as e:
+        logger.warning("Sync historico inicial parcial uid=%s: %s", uid, e)
+
     return True
 
 
