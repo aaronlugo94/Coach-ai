@@ -184,6 +184,7 @@ Solo en español."""
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _fallback_briefing(datos: dict) -> str:
+    u      = datos.get("usuario", {})
     bann   = datos.get("bannister", {})
     hoy    = datos.get("hoy", {})
     macros = datos.get("macros", {})
@@ -193,13 +194,23 @@ def _fallback_briefing(datos: dict) -> str:
     prot   = macros.get("proteina_g", 0)
     rec    = bann.get("rec_volumen","normal")
 
+    recup_activa = (u.get("recuperacion_activa") or "caminar").split(",")[0]
+    RECUP_LABELS = {
+        "caminar": "🚶 Caminar 20-30 min a ritmo cómodo",
+        "yoga":    "🧘 Yoga o estiramiento 15-20 min",
+        "bici":    "🚴 Bici suave 20-25 min",
+        "natacion":"🏊 Natación ligera 20 min",
+        "trote":   "🏃 Trote suave 15-20 min, Zona 1-2",
+    }
+    descanso_txt = RECUP_LABELS.get(recup_activa, "🌿 Descanso activo — movilidad 15 min")
+
     if rec == "deload":
         return (f"🔋 SNC: {snc}% · Semana de deload — volumen reducido, intensidad relativa mantenida\n"
-                f"{'💪 ' + grupo if grupo else '🌿 Descanso activo'} · Pesos igual que semana pasada\n"
+                f"{'💪 ' + grupo if grupo else descanso_txt} · Pesos igual que semana pasada\n"
                 f"🥗 {kcal} kcal · {prot}g proteína · 4 tomas")
 
     return (f"🔋 SNC: {snc}% · {'Listo para alta carga' if snc >= 85 else 'Recuperación moderada'}\n"
-            f"{'💪 HOY: ' + grupo if grupo else '🌿 Descanso activo — movilidad 15 min'}\n"
+            f"{'💪 HOY: ' + grupo if grupo else descanso_txt}\n"
             f"🥗 {kcal} kcal · {prot}g proteína · 4 tomas de {macros.get('toma_proteina',0)}g")
 
 
