@@ -95,13 +95,14 @@ async def handle_wear_init(query, uid: int, context):
         url = get_auth_url(uid)
         await _edit(query,
             "⌚ <b>Conecta Google Fit</b>\n\n"
-            "Toca el botón para autorizar. Cuando termines, "
+            "Toca el botón para autorizar — se abre en tu navegador y "
+            "ya está logueado con tu cuenta de Google. Cuando termines, "
             "regresa aquí y toca <b>Ya conecté</b>.",
-            _kb(
-                [_btn("🔗 Conectar Google Fit", url)],
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔗 Conectar Google Fit", url=url)],
                 [_btn("✅ Ya conecté — continuar", "wear_check:google_fit")],
                 [_btn("⏭ Saltar por ahora", "wear_init:ninguno")],
-            ))
+            ]))
         return
 
     if sub == "apple":
@@ -334,6 +335,9 @@ async def handle_num(query, uid: int, context):
     accion = parts[2]
     buf    = context.user_data.get("num_buffer", "")
 
+    if accion == "noop":
+        return  # botón de confirmar deshabilitado — aún no hay valor
+
     if accion == "d":
         digito = parts[3]
         if digito == "." and "." in buf: pass
@@ -378,13 +382,10 @@ async def handle_num(query, uid: int, context):
                 f"<b>Altura: {valor:g} cm ✅</b>\n\n"
                 f"📊 Tu metabolismo estimado: <b>{tdee} kcal/día</b>\n"
                 f"<i>Se recalcula con tus datos reales de actividad</i>\n\n"
-                f"<b>Bloque 2/4 — Tu experiencia</b>\n\n"
-                f"¿Cuánto tiempo llevas entrenando fuerza de forma seria?",
-                _kb(
-                    [_btn("🌱 Menos de 6 meses — soy nuevo",    "nv:principiante")],
-                    [_btn("💪 6 meses a 2 años — tengo base",   "nv:intermedio")],
-                    [_btn("🔥 Más de 2 años — soy avanzado",    "nv:avanzado")],
-                ))
+                f"<b>✅ Bloque 1/4 completo — Perfil biológico</b>\n\n"
+                f"Sigue el <b>Bloque 2/4 — Tu experiencia</b> "
+                f"(nivel, días, horario). Son 6 preguntas rápidas.",
+                _kb([_btn("Continuar →", "bloque:2")]))
             return
         return
 
@@ -404,6 +405,31 @@ async def handle_num(query, uid: int, context):
 # ══════════════════════════════════════════════════════════════════════════════
 # BLOQUE 2 — EXPERIENCIA
 # ══════════════════════════════════════════════════════════════════════════════
+
+async def handle_bloque(query, uid: int, context):
+    """Conecta las pantallas de pausa entre bloques con la siguiente pregunta real."""
+    sub = query.data.split(":")[1]
+
+    if sub == "2":
+        await _edit(query,
+            "¿Cuánto tiempo llevas entrenando fuerza de forma seria?",
+            _kb(
+                [_btn("🌱 Menos de 6 meses — soy nuevo",    "nv:principiante")],
+                [_btn("💪 6 meses a 2 años — tengo base",   "nv:intermedio")],
+                [_btn("🔥 Más de 2 años — soy avanzado",    "nv:avanzado")],
+            ))
+        return
+
+    if sub == "3":
+        await _mostrar_dieta(query)
+        return
+
+    if sub == "4":
+        await _edit(query,
+            "😴 ¿Cuántas horas duermes por noche?",
+            _kb_sueño(context))
+        return
+
 
 async def handle_nv(query, uid: int, context):
     sub = query.data.split(":")[1]
@@ -551,7 +577,7 @@ async def handle_lm(query, uid: int, context):
         if context.user_data.get("modo_ciclo"):
             await _generar_ciclo(query, uid, context)
         else:
-            await _mostrar_dieta(query)
+            await _mostrar_pausa_bloque3(query)
         return
 
     if sub == "otra":
@@ -568,7 +594,7 @@ async def handle_lm(query, uid: int, context):
         if context.user_data.get("modo_ciclo"):
             await _generar_ciclo(query, uid, context)
         else:
-            await _mostrar_dieta(query)
+            await _mostrar_pausa_bloque3(query)
         return
 
     if sub in sel: sel.discard(sub)
@@ -579,10 +605,18 @@ async def handle_lm(query, uid: int, context):
         _kb_lesiones(sel))
 
 
+async def _mostrar_pausa_bloque3(query):
+    await _edit(query,
+        "<b>✅ Bloque 2/4 completo — Experiencia</b>\n\n"
+        "Sigue el <b>Bloque 3/4 — Alimentación</b> "
+        "(dieta, cocinas, proteínas). Es el bloque más largo — "
+        "tómate tu tiempo.",
+        _kb([_btn("Continuar →", "bloque:3")]))
+
+
 async def _mostrar_dieta(query):
     await _edit(query,
-        "<b>Bloque 3/4 — Alimentación</b>\n\n"
-        "¿Cómo describes tu forma de comer?\n\n"
+        "<b>¿Cómo describes tu forma de comer?</b>\n\n"
         "<i>Omnívoro = comes de todo\n"
         "Saludable = priorizas comida real, evitas ultra-procesados\n"
         "Proteína = priorizas proteína sobre todo\n"
@@ -913,10 +947,10 @@ async def handle_elec(query, uid: int, context):
         upsert_usuario(uid, electrodomesticos=",".join(sorted(sel)) if sel else "ninguno")
         context.user_data.pop("elec_sel", None)
         await _edit(query,
-            f"<b>Bloque 3 completo ✅</b>\n\n"
-            f"<b>Bloque 4/4 — Recuperación y estilo de vida</b>\n\n"
-            f"😴 ¿Cuántas horas duermes por noche?",
-            _kb_sueño(context))
+            "<b>✅ Bloque 3/4 completo — Alimentación</b>\n\n"
+            "Ya casi terminamos. Sigue el <b>Bloque 4/4 — Recuperación</b> "
+            "(sueño, estrés, actividad). Son 4 preguntas.",
+            _kb([_btn("Continuar →", "bloque:4")]))
         return
 
     if sub in sel: sel.discard(sub)
@@ -1227,21 +1261,30 @@ async def regenerar_dieta(uid: int) -> dict | None:
     from ai.coach import generar_plan_nutricion
 
     usuario = get_usuario(uid)
-    if not usuario: return None
+    if not usuario:
+        logger.warning("regenerar_dieta: usuario %s no encontrado", uid)
+        return None
 
-    semana, _ = get_estado(uid)
-    dias_r = fetchall(
-        "SELECT DISTINCT dia FROM rutinas WHERE user_id=? AND ciclo=? AND semana=?",
-        (uid, get_ciclo(uid), semana)
-    )
-    dias_gym = [r["dia"] for r in dias_r] or ["lunes","miercoles","viernes","domingo"]
-    macros   = calcular_macros_dia(uid, es_gym=True)
-    datos    = {"usuario": usuario, "macros": macros, "dias_gym": dias_gym}
+    try:
+        semana, _ = get_estado(uid)
+        dias_r = fetchall(
+            "SELECT DISTINCT dia FROM rutinas WHERE user_id=? AND ciclo=? AND semana=?",
+            (uid, get_ciclo(uid), semana)
+        )
+        dias_gym = [r["dia"] for r in dias_r] or ["lunes","miercoles","viernes","domingo"]
+        macros   = calcular_macros_dia(uid, es_gym=True)
+        datos    = {"usuario": usuario, "macros": macros, "dias_gym": dias_gym}
 
-    plan_json = await generar_plan_nutricion(datos)
-    if plan_json:
-        save_plan_nutricion(uid, plan_json, macros)
-    return plan_json
+        plan_json = await generar_plan_nutricion(datos)
+        if plan_json:
+            save_plan_nutricion(uid, plan_json, macros)
+            return plan_json
+        else:
+            logger.warning("regenerar_dieta uid=%s: generar_plan_nutricion devolvió vacío", uid)
+            return None
+    except Exception as e:
+        logger.error("regenerar_dieta uid=%s falló: %s", uid, e, exc_info=True)
+        return None
 
 
 async def _generar_ciclo_core(uid: int, context, notificar) -> None:
