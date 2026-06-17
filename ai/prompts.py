@@ -25,6 +25,16 @@ def prompt_briefing_matutino(datos: dict) -> str:
     snc_pct = bann.get("snc_pct", 85)
     rec_vol = bann.get("rec_volumen", "normal")
     es_gym  = bool(ejs)
+    recup_activa = (u.get("recuperacion_activa") or "caminar").split(",")[0]
+
+    RECUP_LABELS = {
+        "caminar": "caminar 20-30 min a ritmo cómodo",
+        "yoga":    "sesión de yoga o estiramiento 15-20 min",
+        "bici":    "bici suave 20-25 min, FC baja",
+        "natacion":"natación ligera 20 min",
+        "trote":   "trote suave 15-20 min, Zona 1-2",
+    }
+    recup_txt = RECUP_LABELS.get(recup_activa, "caminar 20-30 min")
 
     nombre_ejs = "\n".join([
         f"  {e['ejercicio'][:28]}  {e['series']}×{e['reps']} · RIR {e['rir_objetivo']}"
@@ -54,7 +64,7 @@ MACROS HOY ({('día de gym' if es_gym else 'descanso')}):
 INSTRUCCIONES ESTRICTAS:
 1. Línea 1: Estado del SNC con el porcentaje REAL y qué significa para hoy
 2. Línea 2: Si es día de gym → ejercicio principal con el peso exacto sugerido y RIR
-   Si es descanso → actividad específica de recuperación activa (pasos meta o movilidad)
+   Si es descanso → recomienda específicamente: {recup_txt} (esta es la preferencia real del usuario, úsala tal cual, no inventes otra actividad)
 3. Línea 3: UNA instrucción de nutrición concreta para hoy (timing, cantidad exacta)
 4. Si rec_volumen=deload: NUNCA sugerir subir peso, explicar supercompensación en 1 frase
 5. Si SNC < 70%: priorizar sueño y proteína sobre entrenamiento
