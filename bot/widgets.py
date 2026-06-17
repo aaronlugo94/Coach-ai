@@ -66,7 +66,10 @@ def kb_calendario_dia(año: int, mes: int) -> InlineKeyboardMarkup:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def kb_numerico(campo: str, valor_actual: str = "") -> InlineKeyboardMarkup:
-    """Teclado tipo calculadora. campo = 'peso' | 'altura'."""
+    """Teclado tipo calculadora. campo = 'peso' | 'altura'.
+    Layout SIEMPRE fijo (mismo número de filas) para que Telegram no
+    tenga que redimensionar el mensaje en cada tap — eso es lo que
+    causaba la sensación de lentitud."""
     rows = [
         [InlineKeyboardButton(str(n), callback_data=f"num:{campo}:d:{n}") for n in range(1,4)],
         [InlineKeyboardButton(str(n), callback_data=f"num:{campo}:d:{n}") for n in range(4,7)],
@@ -77,8 +80,10 @@ def kb_numerico(campo: str, valor_actual: str = "") -> InlineKeyboardMarkup:
             InlineKeyboardButton("⌫", callback_data=f"num:{campo}:back"),
         ],
     ]
-    if valor_actual and valor_actual != "0":
-        rows.append([InlineKeyboardButton("✅ Confirmar", callback_data=f"num:{campo}:ok")])
+    tiene_valor = bool(valor_actual) and valor_actual != "0"
+    label = "✅ Confirmar" if tiene_valor else "Escribe un número..."
+    cb    = f"num:{campo}:ok" if tiene_valor else f"num:{campo}:noop"
+    rows.append([InlineKeyboardButton(label, callback_data=cb)])
     return InlineKeyboardMarkup(rows)
 
 
