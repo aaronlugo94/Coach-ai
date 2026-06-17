@@ -84,6 +84,12 @@ def _run_migrations():
         ("usuarios", "fecha_nac",            "TEXT"),
         ("usuarios", "electrodomesticos",    "TEXT"),
         ("usuarios", "recuperacion_activa",  "TEXT"),
+        # Sesión 16 (Fase 2): onboarding v5
+        ("usuarios", "cocina",               "TEXT"),
+        ("usuarios", "n_comidas",            "INTEGER DEFAULT 3"),
+        ("usuarios", "tiempos_comida",       "TEXT"),
+        ("usuarios", "suplementos",          "TEXT"),
+        ("usuarios", "alcohol",              "TEXT DEFAULT 'no'"),
     ]
     with get_db() as conn:
         for tabla, col, tipo in nuevas_columnas:
@@ -119,6 +125,7 @@ def upsert_usuario(uid: int, **kw):
         "hora_gym","hora_checkin","duracion_sesion","proteinas_favoritas",
         "nivel_estres","factor_estres","wearable","renpho_last_sync",
         "fecha_nac","electrodomesticos","recuperacion_activa",
+        "cocina","n_comidas","tiempos_comida","suplementos","alcohol",
     }
     kw = {k: v for k, v in kw.items() if k in COLS}
     if not kw: return
