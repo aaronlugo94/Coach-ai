@@ -43,15 +43,10 @@ def get_uid(authorization: str = Header(None)) -> int:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Sin token")
     token = authorization.split(" ")[1]
-    # La web reutiliza el token en múltiples requests.
-    # Verificamos la DB directamente sin marcar como usado de nuevo.
-    r = fetchone("SELECT user_id, usado FROM login_tokens WHERE token=?", (token,))
+    # El token de sesión web nunca expira — solo verificamos que exista
+    r = fetchone("SELECT user_id FROM login_tokens WHERE token=?", (token,))
     if not r:
         raise HTTPException(status_code=401, detail="Token no encontrado")
-    if not r["usado"]:
-        # Primera vez: marcar como usado
-        from db.database import execute
-        execute("UPDATE login_tokens SET usado=1 WHERE token=?", (token,))
     return r["user_id"]
 
 
@@ -74,6 +69,28 @@ async def login_email(body: EmailLogin):
 
 
 # ── User endpoints ────────────────────────────────────────────────────────────
+
+
+class TokenBody(BaseModel):
+    token: str
+
+@router.post("/auth/login")
+def verify_web_login(body: TokenBody):
+    """Verifica el magic link. Token permanente — sirve como sesión web."""
+    r = fetchone("SELECT user_id FROM login_tokens WHERE token=?", (body.token,))
+    if not r:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"error": "Token no encontrado"}, status_code=401)
+    return {"user_id": r["user_id"], "valid": True}
+
+@router.get("/auth/login")
+def verify_web_login_get(token: str):
+    """GET alias para compatibilidad."""
+    r = fetchone("SELECT user_id FROM login_tokens WHERE token=?", (token,))
+    if not r:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"error": "Token no encontrado"}, status_code=401)
+    return {"user_id": r["user_id"], "valid": True}
 
 @router.get("/api/me")
 def get_me(authorization: str = Header(None)):
@@ -135,6 +152,10 @@ class OnboardingData(BaseModel):
     nivel_estres:        Optional[str]   = "moderado"
     wearable:            Optional[str]   = "ninguno"
     factor_estres:       Optional[float] = 1.0
+    n_comidas:           Optional[int]   = 3
+    tiempos_comida:      Optional[str]   = None
+    electrodomesticos:   Optional[str]   = None
+    recuperacion_activa: Optional[str]   = None
 
 @router.post("/api/onboarding")
 def save_onboarding(body: OnboardingData, authorization: str = Header(None)):
@@ -304,6 +325,35 @@ def get_nutricion(authorization: str = Header(None)):
     return {"semana": {}}
 
 
+@router.post("/api/nutricion/generar")
+async def generar_nutricion_ahora(authorization: str = Header(None)):
+    """Genera el plan de nutrición semanal bajo demanda (no esperar al domingo)."""
+    uid = get_uid(authorization)
+    from db.database import save_plan_nutricion, get_ciclo
+    from ai.coach import generar_plan_nutricion
+
+    usuario = get_usuario(uid)
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    semana, _ = get_estado(uid)
+    dias_rutina = fetchall(
+        "SELECT DISTINCT dia FROM rutinas WHERE user_id=? AND ciclo=? AND semana=?",
+        (uid, get_ciclo(uid), semana)
+    )
+    dias_gym = [r["dia"] for r in dias_rutina] or ["lunes","miercoles","viernes","domingo"]
+
+    macros = calcular_macros_dia(uid, es_gym=True)
+    datos = {"usuario": usuario, "macros": macros, "dias_gym": dias_gym}
+
+    plan_json = await generar_plan_nutricion(datos)
+    if not plan_json:
+        raise HTTPException(status_code=500, detail="Gemini no pudo generar el plan. Intenta de nuevo.")
+
+    save_plan_nutricion(uid, plan_json, macros)
+    return plan_json
+
+
 # ── Cuerpo ────────────────────────────────────────────────────────────────────
 
 @router.get("/api/pesajes")
@@ -423,3 +473,22 @@ def google_fit_auth_url(authorization: str = Header(None)):
     uid = get_uid(authorization)
     from engine.body.healthconnect import get_auth_url
     return {"url": get_auth_url(uid)}
+
+
+@router.get("/api/google-fit/status")
+def google_fit_status(authorization: str = Header(None)):
+    """Usado por el wizard de onboarding web para saber si ya está
+    conectado y pre-llenar peso/altura/sueño sin volver a preguntar."""
+    uid = get_uid(authorization)
+    from engine.body.healthconnect import esta_conectado
+    from db.database import get_usuario
+
+    conectado = esta_conectado(uid)
+    datos = {}
+    if conectado:
+        u = get_usuario(uid) or {}
+        if u.get("peso_kg"):
+            datos["peso_kg"] = float(u["peso_kg"])
+        if u.get("sueño_horas"):
+            datos["sueño_horas"] = float(u["sueño_horas"])
+    return {"conectado": conectado, "datos": datos}
