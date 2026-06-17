@@ -23,31 +23,21 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     n      = nombre.split()[0] if nombre else "ahí"
 
     if not has_plan(uid):
-        # Mensaje de bienvenida — explica la ciencia en simple
+        # Un solo mensaje de bienvenida + botón Empezar
         await update.message.reply_text(
-            f"Hola {n} 👋\n\n"
+            f"Hola {n}! 👋\n\n"
             "<b>Soy tu entrenador y nutriólogo personal con IA.</b>\n\n"
-            "Así funciono:\n"
-            "🧠 <b>Modelo Bannister</b> — mido tu fatiga real (sueño, HRV, "
-            "esfuerzo) y ajusto tu volumen de entrenamiento día a día\n"
-            "📈 <b>Doble progresión</b> — subo tus pesos automáticamente "
-            "cuando estás listo, sin adivinar\n"
-            "🥗 <b>SISO nutricional</b> — ajusto tus calorías cada semana "
-            "según lo que diga la báscula, no una fórmula fija\n\n"
-            "Todo esto corre solo, en automático. Tú solo entrenas y "
-            "registras tus datos.\n\n"
-            "Empecemos — son 4 bloques rápidos de preguntas 👇",
-            parse_mode="HTML")
-
-        await update.message.reply_text(
-            "<b>¿Cuál es tu objetivo principal a 90 días?</b>",
+            "En 4 bloques rápidos entiendo tu biología, experiencia y estilo "
+            "de vida para diseñar un plan que realmente funcione.\n\n"
+            "Lo que hago por ti:\n"
+            "  🧠 Ajusto tu entrenamiento según tu fatiga real cada día\n"
+            "  📈 Subo tus pesos automáticamente cuando estás listo\n"
+            "  🥗 Ajusto tus calorías cada semana según la báscula\n\n"
+            "Todo corre solo — tú solo entrenas y registras.\n\n"
+            "Toca <b>Empezar</b> cuando estés listo 👇",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⚡ Recomposición corporal",            callback_data="ob:recomposicion")],
-                [InlineKeyboardButton("💪 Volumen limpio — máxima masa magra",callback_data="ob:volumen")],
-                [InlineKeyboardButton("🔥 Déficit eficiente — perder grasa", callback_data="ob:deficit")],
-                [InlineKeyboardButton("🍑 Glúteo y pierna",                  callback_data="ob:gluteo")],
-                [InlineKeyboardButton("🏃 Salud, energía y bienestar",       callback_data="ob:salud")],
+                [InlineKeyboardButton("🚀 Empezar →", callback_data="bienvenida:start")]
             ]))
         return
 
@@ -189,53 +179,6 @@ async def handle_menu(query, uid: int, context):
                     [InlineKeyboardButton("🏠 Menú", callback_data="m:main")],
                 ]), parse_mode="HTML")
         except Exception: pass
-
-    elif sub == "share":
-        from engine.growth.cards import generar_card_progreso
-        from db.database import fetchall
-
-        racha = gamification.get_racha(uid)
-        if racha < 1:
-            try:
-                await query.edit_message_text(
-                    "📸 Completa tu primera sesión de hoy para generar "
-                    "tu primera card de progreso.",
-                    reply_markup=BTN_MENU)
-            except Exception: pass
-            return
-
-        progs_raw = fetchall("""
-            SELECT r.ejercicio,
-                   MAX(p.peso_lbs) peso_actual, MIN(p.peso_lbs) peso_inicio,
-                   MAX(p.peso_lbs) - MIN(p.peso_lbs) cambio
-            FROM pesos p
-            JOIN rutinas r ON p.ejercicio_id=r.ejercicio_id AND r.user_id=p.user_id
-            WHERE p.user_id=? AND p.fecha >= date('now','-7 days')
-            GROUP BY p.ejercicio_id
-            HAVING cambio > 0
-            ORDER BY cambio DESC LIMIT 3
-        """, (uid,))
-
-        progresiones = [
-            {"ejercicio": r["ejercicio"], "peso_inicio": r["peso_inicio"], "peso_actual": r["peso_actual"]}
-            for r in progs_raw
-        ]
-
-        u = get_usuario(uid) or {}
-        nombre = u.get("nombre","") or ""
-
-        try:
-            await query.edit_message_text("📸 Generando tu card...", parse_mode="HTML")
-        except Exception: pass
-
-        png = generar_card_progreso({"nombre": nombre, "racha": racha, "progresiones": progresiones})
-
-        await context.bot.send_photo(
-            chat_id=query.message.chat_id,
-            photo=png,
-            caption="Comparte tu progreso 💪\n\n<i>Guárdala y súbela a tu historia</i>",
-            parse_mode="HTML",
-            reply_markup=BTN_MENU)
 
     elif sub == "dieta":
         from engine.nutrition.macros import calcular_macros_dia
