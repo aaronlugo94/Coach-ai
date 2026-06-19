@@ -440,6 +440,29 @@ def get_ejercicios_dia(uid: int, semana: int, dia: str) -> list[dict]:
         (uid, get_ciclo(uid), semana, dia)
     )
 
+def sustituir_ejercicio(uid: int, dia: str, ejercicio_id_viejo: str,
+                        nuevo: dict, todas_las_semanas: bool = True) -> int:
+    """
+    Reemplaza un ejercicio por otro en la rutina activa. Por default
+    aplica a TODAS las semanas del ciclo actual para ese día — así el
+    usuario no tiene que repetir el cambio cada semana si no le gusta
+    o no tiene el equipo disponible de forma permanente.
+    `nuevo` = {"id","nombre","patron"} del catálogo (Ejercicio).
+    Retorna el número de filas actualizadas.
+    """
+    ciclo = get_ciclo(uid)
+    sql = (
+        "UPDATE rutinas SET ejercicio_id=?, ejercicio=?, patron=? "
+        "WHERE user_id=? AND ciclo=? AND dia=? AND ejercicio_id=?"
+    )
+    params = (nuevo["id"], nuevo["nombre"], nuevo["patron"], uid, ciclo, dia, ejercicio_id_viejo)
+    if not todas_las_semanas:
+        sql = sql.replace("AND dia=?", "AND dia=? AND semana=?")
+        # No usado por ahora — todas_las_semanas=True es el caso por defecto
+    with get_db() as conn:
+        cur = conn.execute(sql, params)
+        return cur.rowcount
+
 def insert_plan(uid: int, semanas: list[dict]) -> int:
     ciclo = get_ciclo(uid)
     n = 0
