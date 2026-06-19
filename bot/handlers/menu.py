@@ -118,14 +118,24 @@ async def cmd_sethorario(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "❓ <b>Comandos disponibles</b>\n\n"
-        "<code>/start</code> — Menú principal / iniciar setup\n"
-        "<code>/login</code> — Acceder a la web app\n"
-        "<code>/sethorario</code> — Cambiar hora de recordatorio\n"
-        "<code>/reset_plan</code> — Generar nueva rutina o dieta\n"
-        "<code>/conectar_fit</code> — Conectar Google Fit\n"
-        "<code>/conectar_renpho</code> — Conectar báscula Renpho\n\n"
-        "💡 <i>Usa los botones del menú principal para todo lo demás — "
-        "no necesitas escribir comandos.</i>",
+        "<code>/start</code>\n"
+        "Abre el menú principal. Si no has hecho el setup, te guía paso a paso (objetivo, perfil, dieta, etc.)\n\n"
+        "<code>/login</code>\n"
+        "Te manda un link para entrar a la web app desde tu navegador — ahí ves tu progreso, gráficas y el plan de nutrición completo\n\n"
+        "<code>/sethorario</code>\n"
+        "Cambia la hora a la que entrenas. Tu briefing matutino y check-in nocturno se reajustan automáticamente (2h antes/después)\n\n"
+        "<code>/reset_plan</code>\n"
+        "Genera una nueva rutina y/o dieta SIN repetir todo el setup — solo te pregunta lo que pudo cambiar (días, nivel, lesiones)\n\n"
+        "<code>/conectar_fit</code>\n"
+        "Conecta Google Fit/WearOS — importa peso, sueño, HRV y FC reposo automáticamente cada día\n\n"
+        "<code>/conectar_renpho</code>\n"
+        "Conecta tu báscula Renpho — sincroniza tu peso solo, sin que tengas que escribirlo a mano\n\n"
+        "💪 <b>Desde el menú principal (botones) también puedes:</b>\n"
+        "  • Ver tu rutina del día\n"
+        "  • Ver tus macros y plan de comidas\n"
+        "  • Revisar tu progreso corporal\n"
+        "  • Compartir tu racha en Instagram\n\n"
+        "💡 <i>Para todo lo del día a día usa los botones — los comandos son solo para configuración.</i>",
         parse_mode="HTML")
 
 
@@ -152,9 +162,18 @@ async def handle_menu(query, uid: int, context):
         except Exception: pass
 
     elif sub == "hoy":
-        from bot.handlers.gym import handle_rutina_preview
+        from bot.handlers.gym import handle_rutina_preview, _render_ejercicio
         semana, dia = get_estado(uid)
-        await handle_rutina_preview(uid, semana, dia, query=query)
+        sesion_activa = context.user_data.get("sesion")
+
+        if sesion_activa and sesion_activa.get("semana") == semana and sesion_activa.get("dia") == dia:
+            # Hay una sesión a medio camino — continuar ahí, no reiniciar
+            idx = sesion_activa.get("idx", 0)
+            txt, kb = _render_ejercicio(uid, semana, dia, idx, context)
+            try: await query.edit_message_text(txt, reply_markup=kb, parse_mode="HTML")
+            except Exception: pass
+        else:
+            await handle_rutina_preview(uid, semana, dia, query=query)
 
     elif sub == "cuerpo":
         pesaje = get_ultimo_pesaje(uid)
