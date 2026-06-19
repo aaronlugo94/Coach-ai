@@ -217,15 +217,33 @@ async def google_callback(code: str = None, state: str = None, error: str = None
     ok = await exchange_code(code, uid)
     if ok and _bot:
         try:
-            await _bot.bot.send_message(
-                chat_id=uid,
-                text="✅ <b>Google Fit conectado</b>\n\n"
-                     "Pasos, sueño, HRV y FC reposo del OnePlus Watch "
-                     "llegan automáticamente cada mañana 🧠\n\n"
-                     "El modelo Bannister empieza a calibrarse con tus datos.",
-                parse_mode="HTML")
-        except Exception:
-            pass
+            from db.database import get_usuario
+            u = get_usuario(uid) or {}
+            en_onboarding = not bool(u.get("onboarding_done"))
+
+            if en_onboarding:
+                # El usuario está a mitad del setup — darle continuidad
+                # directa en vez de un mensaje fijo sin acción.
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                await _bot.bot.send_message(
+                    chat_id=uid,
+                    text="✅ <b>Google Fit conectado</b>\n\n"
+                         "Importando tus datos de los últimos 7 días...",
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("Continuar con el setup →", callback_data="wear_check:google_fit")
+                    ]]))
+            else:
+                # Conexión vía /conectar_fit fuera del onboarding
+                await _bot.bot.send_message(
+                    chat_id=uid,
+                    text="✅ <b>Google Fit conectado</b>\n\n"
+                         "Pasos, sueño, HRV y FC reposo del OnePlus Watch "
+                         "llegan automáticamente cada mañana 🧠\n\n"
+                         "El modelo Bannister empieza a calibrarse con tus datos.",
+                    parse_mode="HTML")
+        except Exception as e:
+            logger.error("Error notificando conexion Fit uid=%s: %s", uid, e)
 
     if ok:
         return HTMLResponse(
