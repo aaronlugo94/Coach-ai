@@ -224,6 +224,56 @@ async def _fetch_peso(c, headers, inicio, fin) -> dict:
     return out
 
 
+async def _fetch_distancia(c, headers, inicio, fin) -> dict:
+    """Distancia recorrida en el día (metros) — útil para validar el
+    cardio reportado y el NEAT (gasto por actividad no estructurada)."""
+    body = {
+        "aggregateBy": [{"dataTypeName": "com.google.distance.delta"}],
+        "bucketByTime": {"durationMillis": 86400000},
+        "startTimeMillis": _ms(inicio), "endTimeMillis": _ms(fin),
+    }
+    out = {}
+    try:
+        r = await c.post(f"{FITNESS_URL}/dataset:aggregate", headers=headers, json=body, timeout=15)
+        if r.status_code == 200:
+            for bucket in r.json().get("bucket", []):
+                for ds in bucket.get("dataset", []):
+                    pts = ds.get("point", [])
+                    if not pts: continue
+                    v = pts[0].get("value", [{}])[0]
+                    fpval = v.get("fpVal")
+                    if fpval:
+                        out["distancia_km"] = round(fpval / 1000, 2)
+    except Exception as e:
+        logger.debug("Fit distancia no disponible: %s", e)
+    return out
+
+
+async def _fetch_spo2(c, headers, inicio, fin) -> dict:
+    """Saturación de oxígeno (SpO2) — no todos los dispositivos lo exponen.
+    Útil para detectar mala recuperación nocturna o esfuerzo en altitud."""
+    body = {
+        "aggregateBy": [{"dataTypeName": "com.google.oxygen_saturation"}],
+        "bucketByTime": {"durationMillis": 86400000},
+        "startTimeMillis": _ms(inicio), "endTimeMillis": _ms(fin),
+    }
+    out = {}
+    try:
+        r = await c.post(f"{FITNESS_URL}/dataset:aggregate", headers=headers, json=body, timeout=15)
+        if r.status_code == 200:
+            for bucket in r.json().get("bucket", []):
+                for ds in bucket.get("dataset", []):
+                    pts = ds.get("point", [])
+                    if not pts: continue
+                    for v in pts[0].get("value", []):
+                        fpval = v.get("fpVal")
+                        if fpval:
+                            out["spo2_pct"] = round(fpval, 1)
+    except Exception as e:
+        logger.debug("Fit SpO2 no disponible: %s", e)
+    return out
+
+
 async def _fetch_sueño(c, headers, inicio, fin) -> dict:
     """
     Sueño total + etapas, vía Sessions API.
@@ -324,6 +374,12 @@ async def sync_usuario(uid: int, fecha: date = None) -> dict:
 
         sueño = await _fetch_sueño(c, headers, inicio, fin)
         datos.update(sueño)
+
+        distancia = await _fetch_distancia(c, headers, inicio, fin)
+        datos.update(distancia)
+
+        spo2 = await _fetch_spo2(c, headers, inicio, fin)
+        datos.update(spo2)
 
         peso = await _fetch_peso(c, headers, inicio, fin)
 
