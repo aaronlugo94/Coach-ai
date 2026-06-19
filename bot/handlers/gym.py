@@ -80,8 +80,8 @@ def _calentamiento_texto(ej: dict, peso: float, es_inicial: bool) -> str:
     if ej.get("patron","") in COMPUESTOS:
         p60 = max(round(peso * 0.60 / 5) * 5, 0)
         nota = " (estimado)" if es_inicial else ""
-        return f"\nCalentamiento: 1 serie con {p60} lbs x 8 reps, luego al peso de trabajo{nota}\n"
-    return "\nCalentamiento: 1 serie ligera antes del peso de trabajo\n"
+        return f"\n🔥 Calentamiento: 1 serie con {p60} lbs x 8 reps, luego al peso de trabajo{nota}\n"
+    return "\n🔥 Calentamiento: 1 serie ligera antes del peso de trabajo\n"
 
 
 def _kb_stepper(semana: int, dia: str, idx: int, peso: float, es_compuesto: bool,
@@ -107,7 +107,7 @@ def _kb_stepper(semana: int, dia: str, idx: int, peso: float, es_compuesto: bool
         [InlineKeyboardButton(f"{peso:g} lbs", callback_data=f"pw:{s}:{d}:{i}:{peso}"),
          btn_p(+5), btn_p(+10), btn_p(+20)],
         # Fila 3: confirmar
-        [InlineKeyboardButton(f"Hecho — {peso:g} lbs", callback_data=f"ej_ok:{s}:{d}:{i}:{peso}")],
+        [InlineKeyboardButton(f"✅ Hecho — {peso:g} lbs", callback_data=f"ej_ok:{s}:{d}:{i}:{peso}")],
     ]
 
     if ejercicio_id:
@@ -115,9 +115,9 @@ def _kb_stepper(semana: int, dia: str, idx: int, peso: float, es_compuesto: bool
 
     nav = []
     if i > 0:
-        nav.append(InlineKeyboardButton("Atras", callback_data=f"prev:{s}:{d}:{i}"))
-    nav.append(InlineKeyboardButton("Saltar", callback_data=f"ej_ok:{s}:{d}:{i}:0"))
-    nav.append(InlineKeyboardButton("Menu", callback_data="m:main"))
+        nav.append(InlineKeyboardButton("← Atrás", callback_data=f"prev:{s}:{d}:{i}"))
+    nav.append(InlineKeyboardButton("⏭ Saltar", callback_data=f"ej_ok:{s}:{d}:{i}:0"))
+    nav.append(InlineKeyboardButton("🏠 Menú", callback_data="m:main"))
     rows.append(nav)
 
     return InlineKeyboardMarkup(rows)
@@ -126,10 +126,10 @@ def _kb_stepper(semana: int, dia: str, idx: int, peso: float, es_compuesto: bool
 def _kb_cardio(semana: int, dia: str, idx: int) -> InlineKeyboardMarkup:
     s, d, i = semana, dia, idx
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Hecho", callback_data=f"ej_ok:{s}:{d}:{i}:0")],
-        [InlineKeyboardButton("Atras",  callback_data=f"prev:{s}:{d}:{i}"),
-         InlineKeyboardButton("Saltar", callback_data=f"ej_ok:{s}:{d}:{i}:-1"),
-         InlineKeyboardButton("Menu",   callback_data="m:main")],
+        [InlineKeyboardButton("✅ Hecho", callback_data=f"ej_ok:{s}:{d}:{i}:0")],
+        [InlineKeyboardButton("← Atrás",  callback_data=f"prev:{s}:{d}:{i}"),
+         InlineKeyboardButton("⏭ Saltar", callback_data=f"ej_ok:{s}:{d}:{i}:-1"),
+         InlineKeyboardButton("🏠 Menú",   callback_data="m:main")],
     ])
 
 
@@ -142,12 +142,12 @@ def _render_ejercicio(uid: int, semana: int, dia: str, idx: int, context=None) -
         c = cardio[0]
         duracion = c.get("reps","20min")
         texto = (
-            f"<b>{CARDIO_ICON} — {c['ejercicio']}</b>\n"
-            f"Duracion: {duracion}\n"
-            f"Zona 2 — mantente a un ritmo donde puedas hablar con esfuerzo"
+            f"<b>🚴 {c['ejercicio']}</b>\n"
+            f"⏱️ {duracion}\n"
+            f"💬 Zona 2 — mantente a un ritmo donde puedas hablar con esfuerzo"
         )
         if c.get("notas"):
-            texto += f"\n\n{c['notas'][:100]}"
+            texto += f"\n\n💡 {c['notas'][:100]}"
         return texto, _kb_cardio(semana, dia, idx)
 
     # ── Fin de sesion ─────────────────────────────────────────────────────────
@@ -167,20 +167,20 @@ def _render_ejercicio(uid: int, semana: int, dia: str, idx: int, context=None) -
     # Cue tecnico en el primer ejercicio
     cue_str = ""
     if idx == 0 and ej.get("notas"):
-        cue_str = f"\n<i>{ej['notas'][:80]}</i>"
+        cue_str = f"\n💡 <i>{ej['notas'][:80]}</i>"
 
     # Proximos ejercicios
     resto = [fuerza[j]["ejercicio"][:28] for j in range(idx+1, min(idx+4, total))]
     if cardio and idx + 1 >= total:
-        resto.append(f"{CARDIO_ICON}: {cardio[0]['ejercicio'][:20]}")
-    resto_str = ("\n\nSigue:\n" + "\n".join(f"  {e}" for e in resto)) if resto else ""
+        resto.append(f"🚴 {cardio[0]['ejercicio'][:20]}")
+    resto_str = ("\n\n<b>Sigue:</b>\n" + "\n".join(f"  · {e}" for e in resto)) if resto else ""
 
-    inicial_str = "\n<i>Primera vez — ajusta a lo que se sienta bien (RIR honesto)</i>" if es_inicial else ""
+    inicial_str = "\n🆕 <i>Primera vez — ajusta a lo que se sienta bien</i>" if es_inicial else ""
 
     texto = (
-        f"<b>{idx+1}/{total} — {ej['ejercicio']}</b>\n"
+        f"<b>💪 {idx+1}/{total} — {ej['ejercicio']}</b>\n"
         f"{ej['series']} series x {ej['reps']} reps\n"
-        f"Intensidad: {rir_txt}"
+        f"🎯 {rir_txt}"
         f"{cue_str}"
         f"{cal_str}"
         f"{inicial_str}"
@@ -194,7 +194,7 @@ def _render_ejercicio(uid: int, semana: int, dia: str, idx: int, context=None) -
 def _fin_sesion(uid: int, semana: int, dia: str) -> tuple[str, object]:
     marcar_completado(uid, semana, dia)
     return (
-        "Sesion completada!\n\nComo estuvo?",
+        "🏁 ¡Sesión completada!\n\n¿Cómo estuvo?",
         kb_feedback_sesion(semana, dia)
     )
 
@@ -215,14 +215,14 @@ async def handle_rutina_preview(uid: int, semana: int, dia: str, query=None, msg
         u = get_usuario(uid) or {}
         ra = u.get("recuperacion_activa","caminar")
         texto = (
-            f"Hoy: Descanso activo\n\n"
-            f"Recomendado para ti ({ra.split(',')[0]}): {u_recovery}\n\n"
-            f"El musculo crece hoy — proteina alta y 7-9h de sueno."
+            f"🌿 <b>Hoy: Descanso activo</b>\n\n"
+            f"✨ Recomendado para ti ({ra.split(',')[0]}): {u_recovery}\n\n"
+            f"💪 El músculo crece hoy — proteína alta y 7-9h de sueño."
         )
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Menu", callback_data="m:main")]])
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menú", callback_data="m:main")]])
     else:
-        GRUPOS_ICON = {"empuje":"Empuje","tiron":"Tiron","pierna":"Pierna",
-                       "gluteo":"Gluteo","core":"Core"}
+        GRUPOS_ICON = {"empuje":"💪 Empuje","tiron":"🏋️ Tirón","pierna":"🦵 Pierna",
+                       "gluteo":"🍑 Glúteo","core":"🎯 Core"}
         grupo = fuerza[0].get("grupo","")
         label = GRUPOS_ICON.get(grupo, grupo.upper())
         dur_cardio = 0
@@ -243,7 +243,7 @@ async def handle_rutina_preview(uid: int, semana: int, dia: str, query=None, msg
 
         if cardio:
             c = cardio[0]
-            lineas.append(f"{len(fuerza)+1}. {CARDIO_ICON}: {c['ejercicio']}  {c.get('reps','20min')}")
+            lineas.append(f"{len(fuerza)+1}. 🚴 {c['ejercicio']}  {c.get('reps','20min')}")
 
         # Calentamiento — preview del que verás al iniciar
         primer_ej = fuerza[0]
@@ -251,15 +251,15 @@ async def handle_rutina_preview(uid: int, semana: int, dia: str, query=None, msg
         cal_preview = _calentamiento_texto(primer_ej, peso_warmup, False).strip()
 
         texto = (
-            f"S{semana} - {dia.capitalize()} - {label}  ~{dur} min\n\n"
+            f"<b>S{semana} · {dia.capitalize()} · {label}</b>  ⏱️ ~{dur} min\n\n"
             f"{cal_preview}\n\n"
-            f"<b>Rutina de hoy:</b>\n" + "\n".join(lineas) + "\n\n"
-            f"Revisa los pesos y toca Empezar cuando estes listo"
+            f"<b>📋 Rutina de hoy:</b>\n" + "\n".join(lineas) + "\n\n"
+            f"Revisa los pesos y toca <b>Empezar</b> cuando estés listo"
         )
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Empezar sesion", callback_data=f"ej_start:{semana}:{dia}")],
-            [InlineKeyboardButton("Saltar este dia", callback_data=f"skip:{semana}:{dia}"),
-             InlineKeyboardButton("Menu",            callback_data="m:main")],
+            [InlineKeyboardButton("▶️ Empezar sesión", callback_data=f"ej_start:{semana}:{dia}")],
+            [InlineKeyboardButton("⏭ Saltar este día", callback_data=f"skip:{semana}:{dia}"),
+             InlineKeyboardButton("🏠 Menú",            callback_data="m:main")],
         ])
 
     if query:
@@ -349,24 +349,21 @@ async def handle_ej_ok(query, uid: int, context):
 
 
 async def handle_fb(query, uid: int):
-    """Feedback de sesion — RIR y fatiga."""
+    """Feedback de sesion — RIR y fatiga. Cierra el ciclo y avanza al
+    siguiente día. El sueño ya no se pregunta aquí — si Google Fit está
+    conectado llega automático cada mañana; si no, se cubre en el
+    check-in nocturno, no justo después de entrenar."""
     parts = query.data.split(":")
     sem, dia, rir, fatiga = int(parts[1]), parts[2], int(parts[3]), int(parts[4])
     save_sesion(uid, sem, dia, completada=1, fatiga_global=fatiga, rir_promedio=rir)
     nueva_sem, nuevo_dia = avanzar_dia(uid, sem, dia)
     set_estado(uid, nueva_sem, nuevo_dia)
-    sueño_kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("menos de 6h", callback_data=f"sue:{sem}:{dia}:5.5"),
-         InlineKeyboardButton("6-7h",        callback_data=f"sue:{sem}:{dia}:6.5")],
-        [InlineKeyboardButton("7-8h",        callback_data=f"sue:{sem}:{dia}:7.5"),
-         InlineKeyboardButton("8h+",         callback_data=f"sue:{sem}:{dia}:8.5")],
-        [InlineKeyboardButton("Saltar",      callback_data="m:hoy")],
-    ])
     try:
         await query.edit_message_text(
-            "Guardado\n\nCuantas horas dormiste anoche?\n"
-            "El sueno es donde crece el musculo.",
-            reply_markup=sueño_kb)
+            "Sesión guardada ✅\n\nNos vemos en la próxima — el análisis llega esta noche 🧠",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("Menú", callback_data="m:main")
+            ]]))
     except Exception: pass
 
 
@@ -468,7 +465,7 @@ async def handle_skip(query, uid: int):
     nueva_sem, nuevo_dia = avanzar_dia(uid, sem, dia)
     set_estado(uid, nueva_sem, nuevo_dia)
     await query.edit_message_text(
-        "Dia saltado.\n\nToca Rutina de hoy cuando estes listo.",
+        "⏭ Día saltado.\n\nToca 💪 Rutina de hoy cuando estés listo.",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("Menu", callback_data="m:main")
+            InlineKeyboardButton("🏠 Menú", callback_data="m:main")
         ]]))
