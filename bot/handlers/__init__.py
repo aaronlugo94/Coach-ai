@@ -19,7 +19,8 @@ from .onboarding import (
     handle_generar_final,
 )
 from .gym import (handle_ej_start, handle_prev, handle_pw, handle_ej_ok,
-                  handle_fb, handle_sue, handle_skip)
+                  handle_fb, handle_sue, handle_skip,
+                  handle_ej_swap, handle_ej_swap_pick)
 from .checkin import handle_ci
 import logging
 
@@ -105,6 +106,8 @@ async def callback_router(update, context):
         elif data.startswith("prev:"):       await handle_prev(query, uid, context)
         elif data.startswith("pw:"):         await handle_pw(query, uid, context)
         elif data.startswith("ej_ok:"):      await handle_ej_ok(query, uid, context)
+        elif data.startswith("ej_swp2:"):    await handle_ej_swap_pick(query, uid, context)
+        elif data.startswith("ej_swap:"):    await handle_ej_swap(query, uid, context)
         elif data.startswith("fb:"):         await handle_fb(query, uid)
         elif data.startswith("sue:"):        await handle_sue(query, uid)
         elif data.startswith("skip:"):       await handle_skip(query, uid)
