@@ -74,10 +74,17 @@ def _ejercicios_dia(grupos: list[str], cfg: SemanaConfig,
     ejercicios = []
     orden = 0
 
+    # Si el día tiene un solo grupo muscular, necesita más ejercicios
+    # para alcanzar el MEV (volumen mínimo efectivo) — 2 principales +
+    # 2 accesorios. Si el día combina 2+ grupos, 1+1 por grupo evita
+    # sesiones excesivamente largas.
+    n_princ = 2 if len(grupos) == 1 else 1
+    n_acc   = 2 if len(grupos) == 1 else 1
+
     for grupo in grupos:
         # Principal
-        princs = _seleccionar(grupo, excl_patrones, ambiente, "principal", 2)
-        for ej in princs[:1]:
+        princs = _seleccionar(grupo, excl_patrones, ambiente, "principal", n_princ)
+        for ej in princs:
             ejercicios.append({
                 "orden":        orden,
                 "ejercicio_id": ej.id,
@@ -93,8 +100,8 @@ def _ejercicios_dia(grupos: list[str], cfg: SemanaConfig,
             orden += 1
 
         # Accesorio
-        accs = _seleccionar(grupo, excl_patrones, ambiente, "accesorio", 2)
-        for ej in accs[:1]:
+        accs = _seleccionar(grupo, excl_patrones, ambiente, "accesorio", n_acc)
+        for ej in accs:
             ejercicios.append({
                 "orden":        orden,
                 "ejercicio_id": ej.id,
