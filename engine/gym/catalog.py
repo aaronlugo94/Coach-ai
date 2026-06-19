@@ -73,3 +73,53 @@ CATALOG = [
 ]
 
 BY_ID = {e.id: e for e in CATALOG}
+
+
+PATRONES_SIMILARES = {
+    "press_horizontal": {"press_horizontal"},
+    "press_inclinado":  {"press_inclinado", "press_horizontal"},
+    "press_vertical":   {"press_vertical"},
+    "jalon_vertical":   {"jalon_vertical"},
+    "remo_horizontal":  {"remo_horizontal"},
+    "curl":             {"curl"},
+    "sentadilla":       {"sentadilla"},
+    "bisagra_cadera":   {"bisagra_cadera"},
+    "peso_muerto":      {"peso_muerto", "bisagra_cadera"},
+}
+
+
+def buscar_alternativas(ejercicio_id: str, ambiente: str = "gym",
+                        excluir_patron: list = None, n: int = 4) -> list[Ejercicio]:
+    """
+    Busca ejercicios alternativos al actual: mismo patrón de movimiento
+    (no solo mismo grupo muscular general — un press de pecho no debe
+    sugerir un press militar como alternativa), mismo rol, compatibles
+    con el ambiente disponible, excluyendo lesiones. Si no hay suficientes
+    alternativas con el mismo patrón exacto, amplía al grupo muscular completo.
+    """
+    actual = BY_ID.get(ejercicio_id)
+    if not actual:
+        return []
+    excl = excluir_patron or []
+    patrones_ok = PATRONES_SIMILARES.get(actual.patron, {actual.patron})
+
+    def _candidatos(solo_patron: bool) -> list[Ejercicio]:
+        return [
+            e for e in CATALOG
+            if e.id != ejercicio_id
+            and e.grupo == actual.grupo
+            and e.rol == actual.rol
+            and ambiente in e.ambiente
+            and e.patron not in excl
+            and not e.es_cardio
+            and (e.patron in patrones_ok if solo_patron else True)
+        ]
+
+    candidatos = _candidatos(solo_patron=True)
+    if len(candidatos) < n:
+        # Ampliar al grupo muscular completo si no hay suficientes
+        extra = [e for e in _candidatos(solo_patron=False) if e not in candidatos]
+        candidatos += extra
+
+    candidatos.sort(key=lambda e: -e.emg_score)
+    return candidatos[:n]
