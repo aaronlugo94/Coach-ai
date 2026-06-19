@@ -186,13 +186,33 @@ async def handle_menu(query, uid: int, context):
         meta    = {"bajar_grasa":"🎯 Bajar grasa","ganar_musculo":"🎯 Ganar músculo",
                    "recomposicion":"🎯 Recomposición","gluteo_pierna":"🎯 Glúteo y pierna",
                    "salud":"🎯 Salud","competitivo":"🎯 Nivel competitivo"}.get(obj,"")
+
+        # Actividad reciente de Google Fit (si está conectado) — pasos,
+        # distancia y SpO2, aprovechando todo lo que reporta el reloj
+        actividad_str = ""
+        from db.database import get_actividad_dia
+        activ = get_actividad_dia(uid)
+        if activ:
+            piezas = []
+            if activ.get("pasos"):
+                piezas.append(f"👟 {activ['pasos']:,} pasos")
+            if activ.get("distancia_km"):
+                piezas.append(f"📍 {activ['distancia_km']} km")
+            if activ.get("spo2_pct"):
+                spo2 = activ["spo2_pct"]
+                alerta = " ⚠️" if spo2 < 94 else ""
+                piezas.append(f"🫁 SpO2 {spo2}%{alerta}")
+            if piezas:
+                actividad_str = "\n\n" + "  ·  ".join(piezas)
+
         try:
             await query.edit_message_text(
                 f"⚖️ <b>{pesaje['fecha']}</b>\n\n"
                 f"Peso: {pesaje['peso_kg']} kg\n"
                 f"Grasa: {pesaje.get('grasa_pct','—')}%  |  Músculo: {pesaje.get('musculo_pct','—')}%\n"
                 f"BMR medido: {pesaje.get('bmr_medido','—')} kcal"
-                f"{chr(10) + meta if meta else ''}",
+                f"{chr(10) + meta if meta else ''}"
+                f"{actividad_str}",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🌐 Ver tendencia", url=f"{WEB_URL}/cuerpo")],
                     [InlineKeyboardButton("🏠 Menú", callback_data="m:main")],
