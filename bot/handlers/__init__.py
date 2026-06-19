@@ -10,10 +10,10 @@ from .menu import (cmd_start, cmd_reset_plan, cmd_login, cmd_conectar_fit,
                    cmd_adduser, handler_texto, handle_menu, handle_rst, handle_horario)
 from .onboarding import (
     handle_bienvenida, handle_wear_init, handle_wear_check, handle_prefill,
-    handle_bloque,
+    handle_bloque, handle_quiere,
     handle_ob, handle_cal, handle_num, handle_sexo,
     handle_nv, handle_dy, handle_dur, handle_gym_hora, handle_am, handle_lm,
-    handle_dt, handle_cocina, handle_n_comidas, handle_t_comida,
+    handle_dt, handle_cocina, handle_n_comidas, handle_t_comida, handle_t_comida_back,
     handle_prot, handle_rt, handle_suple, handle_alcohol, handle_elec,
     handle_sueño_hab, handle_trabajo, handle_estres, handle_ra,
     handle_generar_final,
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Prefijos que no requieren estar en lista de permitidos
 ONBOARDING_PREFIXES = (
-    "bienvenida:", "wear_init:", "wear_check:", "prefill:", "bloque:",
+    "bienvenida:", "wear_init:", "wear_check:", "prefill:", "bloque:", "quiere:",
     "ob:", "cal:", "num:", "sexo:",
     "nv:", "dy:", "dur:", "gym_hora:", "am:", "lm:",
     "dt:", "cocina:", "n_comidas:", "t_comida:",
@@ -66,6 +66,7 @@ async def callback_router(update, context):
         elif data.startswith("wear_check:"): await handle_wear_check(query, uid, context)
         elif data.startswith("prefill:"):    await handle_prefill(query, uid, context)
         elif data.startswith("bloque:"):     await handle_bloque(query, uid, context)
+        elif data.startswith("quiere:"):     await handle_quiere(query, uid, context)
 
         # ── Onboarding — Bloque 1 ─────────────────────────────────────────────
         elif data.startswith("ob:"):         await handle_ob(query, uid, context)
@@ -85,6 +86,7 @@ async def callback_router(update, context):
         elif data.startswith("dt:"):         await handle_dt(query, uid, context)
         elif data.startswith("cocina:"):     await handle_cocina(query, uid, context)
         elif data.startswith("n_comidas:"):  await handle_n_comidas(query, uid, context)
+        elif data.startswith("t_comida_back:"): await handle_t_comida_back(query, uid, context)
         elif data.startswith("t_comida:"):   await handle_t_comida(query, uid, context)
         elif data.startswith("prot:"):       await handle_prot(query, uid, context)
         elif data.startswith("rt:"):         await handle_rt(query, uid, context)
