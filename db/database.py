@@ -90,6 +90,8 @@ def _run_migrations():
         ("usuarios", "tiempos_comida",       "TEXT"),
         ("usuarios", "suplementos",          "TEXT"),
         ("usuarios", "alcohol",              "TEXT DEFAULT 'no'"),
+        # Sesión 22: Google Fit ampliado — SpO2
+        ("actividad_diaria", "spo2_pct",      "REAL"),
     ]
     with get_db() as conn:
         for tabla, col, tipo in nuevas_columnas:
@@ -604,8 +606,9 @@ def save_actividad(uid: int, fecha: str, datos: dict):
         INSERT INTO actividad_diaria
         (user_id, fecha, pasos, calorias_activas, minutos_actividad, distancia_km,
          hrv_promedio, fc_reposo, sueño_total_min, sueño_profundo_min,
-         sueño_rem_min, sueño_ligero_min, zona_fc_predominante, rer_estimado, fuente)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         sueño_rem_min, sueño_ligero_min, zona_fc_predominante, rer_estimado,
+         spo2_pct, fuente)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(user_id, fecha) DO UPDATE SET
         pasos=excluded.pasos, calorias_activas=excluded.calorias_activas,
         hrv_promedio=excluded.hrv_promedio, fc_reposo=excluded.fc_reposo,
@@ -613,7 +616,8 @@ def save_actividad(uid: int, fecha: str, datos: dict):
         sueño_profundo_min=excluded.sueño_profundo_min,
         sueño_rem_min=excluded.sueño_rem_min,
         zona_fc_predominante=excluded.zona_fc_predominante,
-        rer_estimado=excluded.rer_estimado
+        rer_estimado=excluded.rer_estimado,
+        spo2_pct=excluded.spo2_pct
     """, (
         uid, fecha,
         datos.get("pasos", 0), datos.get("calorias_activas", 0),
@@ -622,6 +626,7 @@ def save_actividad(uid: int, fecha: str, datos: dict):
         datos.get("sueño_total_min"), datos.get("sueño_profundo_min"),
         datos.get("sueño_rem_min"), datos.get("sueño_ligero_min"),
         datos.get("zona_fc_predominante", 1), datos.get("rer_estimado"),
+        datos.get("spo2_pct"),
         datos.get("fuente", "google_fit"),
     ))
 
