@@ -33,6 +33,7 @@ def kb_calendario_anio(base: int | None = None) -> InlineKeyboardMarkup:
         InlineKeyboardButton("◀ -12", callback_data=f"cal:ynav:{base-12}"),
         InlineKeyboardButton("+12 ▶", callback_data=f"cal:ynav:{min(base+12, hoy)}"),
     ])
+    rows.append([InlineKeyboardButton("← Cambiar objetivo", callback_data="ob:back")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -84,6 +85,7 @@ def kb_numerico(campo: str, valor_actual: str = "") -> InlineKeyboardMarkup:
     label = "✅ Confirmar" if tiene_valor else "Escribe un número..."
     cb    = f"num:{campo}:ok" if tiene_valor else f"num:{campo}:noop"
     rows.append([InlineKeyboardButton(label, callback_data=cb)])
+    rows.append([InlineKeyboardButton("← Atrás", callback_data=f"num:{campo}:salir")])
     return InlineKeyboardMarkup(rows)
 
 
