@@ -117,7 +117,7 @@ async def handle_wear_init(query, uid: int, context):
         return
 
     # samsung o ninguno → continuar manual
-    await _mostrar_objetivo(query, uid, context)
+    await _mostrar_que_quiere(query, uid, context)
 
 
 async def handle_wear_check(query, uid: int, context):
@@ -189,7 +189,30 @@ async def _prefill_desde_fit(query, uid: int, context):
 
 
 async def handle_prefill(query, uid: int, context):
-    """Confirmación de datos de Fit — continuar al objetivo."""
+    """Confirmación de datos de Fit — sigue a elegir qué quiere el usuario."""
+    await _mostrar_que_quiere(query, uid, context)
+
+
+async def _mostrar_que_quiere(query, uid, context):
+    """
+    Pregunta clave que define el largo del setup: si el usuario solo
+    quiere rutina, nos saltamos TODO el bloque de alimentación —
+    se siente mucho más corto y solo pide lo que de verdad se va a usar.
+    """
+    await _edit(query,
+        "✅ <b>Wearable configurado</b>\n\n"
+        "¿Qué quieres que arme primero?\n"
+        "<i>Esto define cuántas preguntas te voy a hacer</i>",
+        _kb(
+            [_btn("💪 Solo mi rutina de gym",        "quiere:gym")],
+            [_btn("🥗 Solo mi plan de dieta",        "quiere:dieta")],
+            [_btn("🔥 Las dos — rutina y dieta",     "quiere:todo")],
+        ))
+
+
+async def handle_quiere(query, uid: int, context):
+    sub = query.data.split(":")[1]
+    context.user_data["quiere"] = sub  # gym | dieta | todo
     await _mostrar_objetivo(query, uid, context)
 
 
@@ -259,6 +282,15 @@ async def handle_cal(query, uid: int, context):
             kb_calendario_mes(año))
         return
 
+    if sub == "back_day":
+        año = context.user_data.get("cal_año_confirmado")
+        mes = context.user_data.get("cal_mes_confirmado")
+        if not año or not mes:
+            await _edit(query, "📅 ¿Cuándo naciste?\n<i>Toca tu año</i>", kb_calendario_anio())
+            return
+        await _edit(query, f"<b>{año} ✅</b>\n\n📅 ¿Qué día?", kb_calendario_dia(año, mes))
+        return
+
     if sub == "Y":
         año = int(parts[2])
         context.user_data["cal_año"] = año
@@ -283,6 +315,8 @@ async def handle_cal(query, uid: int, context):
         edad = hoy.year - año - ((hoy.month, hoy.day) < (mes, dia))
         upsert_usuario(uid, fecha_nac=fecha_nac, edad=edad)
 
+        context.user_data["cal_año_confirmado"] = año
+        context.user_data["cal_mes_confirmado"] = mes
         context.user_data.pop("cal_año", None)
         context.user_data.pop("cal_mes", None)
 
@@ -293,6 +327,7 @@ async def handle_cal(query, uid: int, context):
             _kb(
                 [_btn("Hombre", "sexo:hombre"),
                  _btn("Mujer",  "sexo:mujer")],
+                _back("cal:back_day"),
             ))
         return
 
@@ -337,6 +372,24 @@ async def handle_num(query, uid: int, context):
 
     if accion == "noop":
         return  # botón de confirmar deshabilitado — aún no hay valor
+
+    if accion == "salir":
+        context.user_data["num_buffer"] = ""
+        if campo == "peso":
+            # Volver a la pregunta de sexo (regresa a confirmar de nuevo)
+            await _edit(query,
+                "¿Cuál es tu sexo biológico?\n"
+                "<i>Necesario para calcular tu metabolismo basal (Mifflin-St Jeor)</i>",
+                _kb(
+                    [_btn("Hombre", "sexo:hombre"),
+                     _btn("Mujer",  "sexo:mujer")],
+                    _back("cal:back_day"),
+                ))
+        else:  # altura -> volver a peso
+            await _edit(query,
+                "⚖️ ¿Cuánto pesas?\n<i>Escribe tu peso en kg</i>\n\nPeso: <b>_</b> kg",
+                kb_numerico("peso", ""))
+        return
 
     if accion == "d":
         digito = parts[3]
@@ -417,6 +470,7 @@ async def handle_bloque(query, uid: int, context):
                 [_btn("🌱 Menos de 6 meses — soy nuevo",    "nv:principiante")],
                 [_btn("💪 6 meses a 2 años — tengo base",   "nv:intermedio")],
                 [_btn("🔥 Más de 2 años — soy avanzado",    "nv:avanzado")],
+                _back("bloque:back1"),
             ))
         return
 
@@ -427,7 +481,42 @@ async def handle_bloque(query, uid: int, context):
     if sub == "4":
         await _edit(query,
             "😴 ¿Cuántas horas duermes por noche?",
-            _kb_sueño(context))
+            InlineKeyboardMarkup(
+                list(_kb_sueño(context).inline_keyboard) + [_back("bloque:back3")]
+            ))
+        return
+
+    if sub == "back1":
+        await _edit(query,
+            "<b>✅ Bloque 1/4 completo — Perfil biológico</b>\n\n"
+            "Sigue el <b>Bloque 2/4 — Tu experiencia</b> "
+            "(nivel, días, horario). Son 6 preguntas rápidas.",
+            _kb([_btn("Continuar →", "bloque:2")]))
+        return
+
+    if sub == "back2":
+        await _edit(query,
+            "<b>✅ Bloque 2/4 completo — Experiencia</b>\n\n"
+            "Sigue el <b>Bloque 3/4 — Alimentación</b> "
+            "(dieta, cocinas, proteínas). Es el bloque más largo — "
+            "tómate tu tiempo.",
+            _kb([_btn("Continuar →", "bloque:3")]))
+        return
+
+    if sub == "back3":
+        quiere = context.user_data.get("quiere", "todo")
+        if quiere == "gym":
+            await _edit(query,
+                "<b>✅ Perfil de entrenamiento completo</b>\n\n"
+                "Sigue el <b>Bloque final — Recuperación</b> "
+                "(sueño, estrés, actividad). Son 4 preguntas.",
+                _kb([_btn("Continuar →", "bloque:4")]))
+        else:
+            await _edit(query,
+                "<b>✅ Bloque 3/4 completo — Alimentación</b>\n\n"
+                "Sigue el <b>Bloque 4/4 — Recuperación</b> "
+                "(sueño, estrés, actividad). Son 4 preguntas.",
+                _kb([_btn("Continuar →", "bloque:4")]))
         return
 
 
@@ -577,7 +666,7 @@ async def handle_lm(query, uid: int, context):
         if context.user_data.get("modo_ciclo"):
             await _generar_ciclo(query, uid, context)
         else:
-            await _mostrar_pausa_bloque3(query)
+            await _mostrar_pausa_bloque3(query, context)
         return
 
     if sub == "otra":
@@ -594,7 +683,7 @@ async def handle_lm(query, uid: int, context):
         if context.user_data.get("modo_ciclo"):
             await _generar_ciclo(query, uid, context)
         else:
-            await _mostrar_pausa_bloque3(query)
+            await _mostrar_pausa_bloque3(query, context)
         return
 
     if sub in sel: sel.discard(sub)
@@ -605,7 +694,33 @@ async def handle_lm(query, uid: int, context):
         _kb_lesiones(sel))
 
 
-async def _mostrar_pausa_bloque3(query):
+async def _mostrar_pausa_bloque3(query, context=None):
+    """
+    Si el usuario eligió 'Solo rutina' al inicio, nos saltamos TODO
+    el bloque de alimentación — directo a Recuperación. Si más tarde
+    pide el plan de dieta (botón en el menú o /reset_plan), ahí se
+    le preguntan estos datos.
+    """
+    quiere = context.user_data.get("quiere", "todo") if context else "todo"
+
+    if quiere == "gym":
+        # Defaults razonables para los campos de alimentación que nos
+        # saltamos — así si el usuario pide el plan de dieta después,
+        # calcular_macros_dia() y el planner de nutrición no truenan
+        # por campos vacíos. Se le preguntan de verdad cuando los pida.
+        upsert_usuario(uid,
+            tipo_dieta="omnivoro", cocina="variada", n_comidas=3,
+            proteinas_favoritas="pollo,huevo,atun", alergias="ninguna",
+            donde_come="casa", suplementos="ninguno", alcohol="no",
+            electrodomesticos="air_fryer,microondas,horno,licuadora")
+        await _edit(query,
+            "<b>✅ Perfil de entrenamiento completo</b>\n\n"
+            "Saltamos las preguntas de alimentación — solo querías la rutina. "
+            "Sigue el <b>Bloque final — Recuperación</b> "
+            "(sueño, estrés, actividad). Son 4 preguntas.",
+            _kb([_btn("Continuar →", "bloque:4")]))
+        return
+
     await _edit(query,
         "<b>✅ Bloque 2/4 completo — Experiencia</b>\n\n"
         "Sigue el <b>Bloque 3/4 — Alimentación</b> "
@@ -628,6 +743,7 @@ async def _mostrar_dieta(query):
             [_btn("🍖 Alta proteína — es mi prioridad",    "dt:proteina")],
             [_btn("🌱 Vegano / Vegetariano",               "dt:vegano")],
             [_btn("🥑 Keto / Bajo en carbos",              "dt:keto")],
+            _back("bloque:back2"),
         ))
 
 
@@ -675,12 +791,20 @@ def _kb_cocinas(sel: set) -> InlineKeyboardMarkup:
     rows.append([_btn(f"{mark} {e} {l}", f"cocina:{k}")])
     n = len(sel)
     rows.append([_btn(f"✅ Continuar ({n})" if n else "✅ Sin preferencia — continuar", "cocina:ok")])
+    rows.append(_back("dt:back"))
     return InlineKeyboardMarkup(rows)
 
 
 async def handle_cocina(query, uid: int, context):
     sub = query.data.split(":")[1]
     sel = context.user_data.get("cocina_sel", set())
+
+    if sub == "back":
+        await _edit(query,
+            f"<b>¿Cuáles son tus cocinas favoritas?</b> ({len(sel)}/4)\n"
+            f"<i>La IA arma el plan con comidas que te gusten</i>",
+            _kb_cocinas(sel))
+        return
 
     if sub == "ok":
         upsert_usuario(uid, cocina=",".join(sorted(sel)) if sel else "variada")
@@ -708,17 +832,24 @@ async def _mostrar_comidas_dia(query):
             [_btn("2 comidas — ayuno intermitente",         "n_comidas:2")],
             [_btn("3 comidas — desayuno, comida y cena",    "n_comidas:3")],
             [_btn("4+ comidas — incluyo snacks/merienda",   "n_comidas:4")],
+            _back("cocina:back"),
         ))
 
 
 async def handle_n_comidas(query, uid: int, context):
     sub = query.data.split(":")[1]
+
+    if sub == "back":
+        await _mostrar_comidas_dia(query)
+        return
+
     n   = int(sub)
     upsert_usuario(uid, n_comidas=n)
     context.user_data["comidas_restantes"] = (
         ["desayuno","comida","cena"][:n] if n <= 3
         else ["desayuno","comida","cena","snack"]
     )
+    context.user_data["comidas_hechas"] = []
     await _siguiente_comida_tiempo(query, uid, context)
 
 
@@ -730,8 +861,13 @@ async def _siguiente_comida_tiempo(query, uid, context):
         return
 
     comida = restantes[0]
+    hechas = context.user_data.get("comidas_hechas", [])
     EMOJI  = {"desayuno":"🌅","comida":"☀️","cena":"🌙","snack":"🍎"}
     NOMBRE = {"desayuno":"Desayuno","comida":"Comida","cena":"Cena","snack":"Snack"}
+
+    # Atrás: si es la primera comida, regresa a "número de comidas";
+    # si no, regresa a la comida anterior para ajustar su tiempo.
+    back_cb = "n_comidas:back" if not hechas else f"t_comida_back:{hechas[-1]}"
 
     await _edit(query,
         f"{EMOJI.get(comida,'🍽️')} <b>{NOMBRE.get(comida,comida).capitalize()}</b>\n\n"
@@ -741,6 +877,7 @@ async def _siguiente_comida_tiempo(query, uid, context):
             [_btn("🕐 10-20 min — algo rápido",       f"t_comida:{comida}:20")],
             [_btn("🍳 20-40 min — tengo tiempo",      f"t_comida:{comida}:40")],
             [_btn("👨‍🍳 Más de 40 min — me gusta cocinar", f"t_comida:{comida}:60")],
+            _back(back_cb),
         ))
 
 
@@ -758,6 +895,10 @@ async def handle_t_comida(query, uid: int, context):
         restantes.pop(0)
     context.user_data["comidas_restantes"] = restantes
 
+    hechas = context.user_data.get("comidas_hechas", [])
+    hechas.append(comida)
+    context.user_data["comidas_hechas"] = hechas
+
     # Guardar todos los tiempos cuando terminan
     if not restantes:
         import json as _json
@@ -766,14 +907,36 @@ async def handle_t_comida(query, uid: int, context):
     await _siguiente_comida_tiempo(query, uid, context)
 
 
+async def handle_t_comida_back(query, uid: int, context):
+    """Atrás dentro del flujo de tiempo-por-comida — regresa a la
+    comida anterior para poder reajustar su tiempo."""
+    comida = query.data.split(":")[1]
+
+    hechas = context.user_data.get("comidas_hechas", [])
+    if comida in hechas:
+        hechas.remove(comida)
+    context.user_data["comidas_hechas"] = hechas
+
+    restantes = context.user_data.get("comidas_restantes", [])
+    if comida not in restantes:
+        restantes.insert(0, comida)
+    context.user_data["comidas_restantes"] = restantes
+
+    await _siguiente_comida_tiempo(query, uid, context)
+
+
 async def _mostrar_proteinas(query, context):
     context.user_data.pop("tiempos_comida", None)
     context.user_data.pop("comidas_restantes", None)
+    context.user_data.pop("comidas_hechas", None)
+
     await _edit(query,
         "<b>¿Cuáles son tus fuentes de proteína favoritas?</b>\n\n"
         "<i>Sin límite — la IA arma el plan con lo que te gusta.\n"
         "Si no marcas nada, usamos las más comunes.</i>",
-        _kb_proteinas(set()))
+        InlineKeyboardMarkup(
+            list(_kb_proteinas(set()).inline_keyboard) + [_back("cocina:back")]
+        ))
 
 
 # ── Proteínas favoritas — sin límite ──────────────────────────────────────────
@@ -803,6 +966,12 @@ def _kb_proteinas(sel: set) -> InlineKeyboardMarkup:
 async def handle_prot(query, uid: int, context):
     sub = query.data.split(":")[1]
     sel = context.user_data.get("prot_sel", set())
+
+    if sub == "back":
+        await _edit(query,
+            "<b>¿Tienes alguna restricción alimentaria?</b>",
+            _kb_restricciones(set()))
+        return
 
     if sub == "ok":
         prots = list(sel) if sel else ["pollo","huevo","atun"]
@@ -845,12 +1014,20 @@ def _kb_restricciones(sel: set) -> InlineKeyboardMarkup:
     rows.append([_btn("✏️ Otra restricción (escribir)", "rt:otra")])
     n = len(sel)
     rows.append([_btn(f"✅ Confirmar ({n})" if n else "✅ Ninguna — continuar", "rt:ok")])
+    rows.append(_back("prot:back"))
     return InlineKeyboardMarkup(rows)
 
 
 async def handle_rt(query, uid: int, context):
     sub = query.data.split(":")[1]
     sel = context.user_data.get("rest_sel", set())
+
+    if sub == "back":
+        await _edit(query,
+            f"<b>¿Cuáles son tus proteínas favoritas?</b>\n"
+            f"<i>Sin límite — más opciones = mejores recetas</i>",
+            _kb_proteinas(set()))
+        return
 
     if sub == "otra":
         context.user_data["esperando_texto"] = "restriccion_otra"
@@ -887,11 +1064,19 @@ async def _mostrar_suplementos(query):
             [_btn("🥛💊 Whey + Creatina",          "suple:whey_creatina")],
             [_btn("🌿 Multivitamínico",             "suple:multi")],
             [_btn("🔀 Varios (whey+crea+multi)",    "suple:varios")],
+            _back("rt:back"),
         ))
 
 
 async def handle_suple(query, uid: int, context):
     sub = query.data.split(":")[1]
+
+    if sub == "back":
+        await _edit(query,
+            "<b>¿Tienes alguna restricción alimentaria?</b>",
+            _kb_restricciones(set()))
+        return
+
     upsert_usuario(uid, suplementos=sub)
     await _edit(query,
         f"<b>Suplementos: {sub} ✅</b>\n\n"
@@ -902,17 +1087,26 @@ async def handle_suple(query, uid: int, context):
             [_btn("🍷 Ocasional (1-2x/mes)",   "alcohol:ocasional")],
             [_btn("🍺 Moderado (1-2x/semana)", "alcohol:moderado")],
             [_btn("🍻 Frecuente (3+ x/semana)","alcohol:frecuente")],
+            _back("suple:back"),
         ))
 
 
 async def handle_alcohol(query, uid: int, context):
     sub = query.data.split(":")[1]
+
+    if sub == "back":
+        await _mostrar_suplementos(query)
+        return
+
     upsert_usuario(uid, alcohol=sub)
     await _edit(query,
         f"<b>Alcohol: {sub} ✅</b>\n\n"
         f"🔌 ¿Con qué electrodomésticos cocinas?\n"
         f"<i>Todos marcados por default — quita lo que NO tienes</i>",
-        _kb_electrodomesticos(set(["air_fryer","microondas","horno","licuadora"])))
+        InlineKeyboardMarkup(
+            list(_kb_electrodomesticos(set(["air_fryer","microondas","horno","licuadora"])).inline_keyboard)
+            + [_back("alcohol:back")]
+        ))
 
 
 # ── Electrodomésticos — todos marcados por default ────────────────────────────
@@ -935,6 +1129,7 @@ def _kb_electrodomesticos(sel: set) -> InlineKeyboardMarkup:
         rows.append(row)
     n = len(sel)
     rows.append([_btn(f"✅ Tengo estos ({n})", "elec:ok")])
+    rows.append(_back("elec:back"))
     return InlineKeyboardMarkup(rows)
 
 
@@ -942,6 +1137,19 @@ async def handle_elec(query, uid: int, context):
     sub = query.data.split(":")[1]
     # Default: todos marcados al abrir
     sel = context.user_data.get("elec_sel", set(["air_fryer","microondas","horno","licuadora"]))
+
+    if sub == "back":
+        await _edit(query,
+            f"🍺 ¿Consumes alcohol?\n"
+            f"<i>El alcohol tiene calorías ocultas que afectan el déficit</i>",
+            _kb(
+                [_btn("❌ No consumo",              "alcohol:no")],
+                [_btn("🍷 Ocasional (1-2x/mes)",   "alcohol:ocasional")],
+                [_btn("🍺 Moderado (1-2x/semana)", "alcohol:moderado")],
+                [_btn("🍻 Frecuente (3+ x/semana)","alcohol:frecuente")],
+                _back("suple:back"),
+            ))
+        return
 
     if sub == "ok":
         upsert_usuario(uid, electrodomesticos=",".join(sorted(sel)) if sel else "ninguno")
@@ -998,11 +1206,21 @@ async def handle_sueño_hab(query, uid: int, context):
             [_btn("🚶 Moderado — me muevo algo",                    "trabajo:moderado")],
             [_btn("🏗️ Activo — de pie o en movimiento constante", "trabajo:activo")],
             [_btn("🏃 Muy activo — trabajo físico intenso",        "trabajo:muy_activo")],
+            _back("trabajo:back"),
         ))
 
 
 async def handle_trabajo(query, uid: int, context):
     sub = query.data.split(":")[1]
+
+    if sub == "back":
+        await _edit(query,
+            "😴 ¿Cuántas horas duermes por noche?",
+            InlineKeyboardMarkup(
+                list(_kb_sueño(context).inline_keyboard) + [_back("bloque:back3")]
+            ))
+        return
+
     FACTOR = {"sedentario":1.2,"moderado":1.375,"activo":1.55,"muy_activo":1.725}
     factor = FACTOR.get(sub, 1.375)
     upsert_usuario(uid, actividad_nivel=sub)
@@ -1022,11 +1240,26 @@ async def handle_trabajo(query, uid: int, context):
             [_btn("😐 Moderado — algo de presión",   "estres:moderado")],
             [_btn("😤 Alto — trabajo/vida intensa",  "estres:alto")],
             [_btn("🤯 Muy alto — siempre ocupado",   "estres:muy_alto")],
+            _back("estres:back"),
         ))
 
 
 async def handle_estres(query, uid: int, context):
     sub = query.data.split(":")[1]
+
+    if sub == "back":
+        await _edit(query,
+            "¿Cómo es tu actividad durante el día?\n"
+            "<i>Afecta tu gasto calórico real (TDEE)</i>",
+            _kb(
+                [_btn("💺 Sedentario — oficina/casa todo el día",      "trabajo:sedentario")],
+                [_btn("🚶 Moderado — me muevo algo",                    "trabajo:moderado")],
+                [_btn("🏗️ Activo — de pie o en movimiento constante", "trabajo:activo")],
+                [_btn("🏃 Muy activo — trabajo físico intenso",        "trabajo:muy_activo")],
+                _back("trabajo:back"),
+            ))
+        return
+
     FACTOR = {"bajo":1.0,"moderado":1.1,"alto":1.25,"muy_alto":1.4}
     upsert_usuario(uid, nivel_estres=sub, factor_estres=FACTOR.get(sub,1.0))
 
@@ -1056,12 +1289,26 @@ def _kb_recuperacion(sel: set) -> InlineKeyboardMarkup:
     rows.append([_btn("✏️ Otra (escribir)", "ra:otra")])
     n = len(sel)
     rows.append([_btn(f"✅ Confirmar ({n})" if n else "⏭ Sin preferencia — continuar", "ra:ok")])
+    rows.append(_back("ra:back"))
     return InlineKeyboardMarkup(rows)
 
 
 async def handle_ra(query, uid: int, context):
     sub = query.data.split(":")[1]
     sel = context.user_data.get("ra_sel", set())
+
+    if sub == "back":
+        await _edit(query,
+            "¿Cómo describes tu nivel de estrés habitual?\n"
+            "<i>El estrés crónico eleva el cortisol y afecta la recuperación muscular</i>",
+            _kb(
+                [_btn("😌 Bajo — vida tranquila",        "estres:bajo")],
+                [_btn("😐 Moderado — algo de presión",   "estres:moderado")],
+                [_btn("😤 Alto — trabajo/vida intensa",  "estres:alto")],
+                [_btn("🤯 Muy alto — siempre ocupado",   "estres:muy_alto")],
+                _back("estres:back"),
+            ))
+        return
 
     if sub == "otra":
         context.user_data["esperando_texto"] = "recuperacion_otra"
@@ -1074,7 +1321,7 @@ async def handle_ra(query, uid: int, context):
     if sub == "ok":
         upsert_usuario(uid, recuperacion_activa=",".join(sorted(sel)) if sel else "caminar")
         context.user_data.pop("ra_sel", None)
-        await _mostrar_final(query)
+        await _mostrar_final(query, uid, context)
         return
 
     if sub in sel: sel.discard(sub)
@@ -1089,20 +1336,28 @@ async def handle_ra(query, uid: int, context):
 # FINAL — ¿Qué quieres generar?
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def _mostrar_final(query):
-    await _edit(query,
-        "<b>¡Perfil completo! 🎉</b>\n\n"
-        "Ahora dime qué quieres que genere primero:",
-        _kb(
-            [_btn("💪 Rutina de gym",          "generar:gym")],
-            [_btn("🥗 Plan de dieta semanal",  "generar:dieta")],
-            [_btn("🔄 Los dos (recomendado)",  "generar:todo")],
-        ))
+async def _mostrar_final(query, uid: int, context):
+    """
+    Ya sabemos qué quiere el usuario desde el inicio del onboarding
+    (Rutina / Dieta / Las dos) — generamos directo sin re-preguntar.
+    """
+    quiere = context.user_data.get("quiere", "todo")
+    await _generar_final_core(query, uid, context, quiere)
 
 
 async def handle_generar_final(query, uid: int, context):
     sub = query.data.split(":")[1]
+    await _generar_final_core(query, uid, context, sub)
 
+
+async def _generar_final_core(query, uid: int, context, sub: str):
+    """
+    Lógica de generación al terminar el onboarding. Factorizada para
+    poder llamarse tanto desde el callback 'generar:X' como directo
+    desde _mostrar_final() cuando ya sabemos qué quiere el usuario
+    desde el inicio (context.user_data['quiere']) — así no se le
+    vuelve a preguntar lo mismo dos veces.
+    """
     try:
         await query.edit_message_text(
             "⚙️ <b>Creando tu plan personalizado...</b>\n\n"
