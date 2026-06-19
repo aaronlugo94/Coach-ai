@@ -61,17 +61,22 @@ async def enviar_resumenes(bot=None):
 
 
 async def _enviar_checkin(bot, uid: int):
-    """Envía el mensaje de check-in con los 4 botones."""
+    """Envía el mensaje de check-in con los botones.
+    El tap de sueño solo se incluye si el usuario NO tiene Google Fit
+    conectado — si lo tiene, el dato ya llega automático."""
     semana, dia = get_estado(uid)
     ejs         = get_ejercicios_dia(uid, semana, dia)
     es_gym      = bool([e for e in ejs if not e.get("es_cardio")])
 
+    from engine.body.healthconnect import esta_conectado
+    pedir_sueño = not esta_conectado(uid)
+
     if es_gym:
         texto = (
             "🌙 <b>Check-in de hoy</b>\n\n"
-            "¿Cómo fue tu día? Dos taps y listo 👇"
+            "¿Cómo fue tu día? Unos taps y listo 👇"
         )
-        kb = InlineKeyboardMarkup([
+        rows = [
             [
                 InlineKeyboardButton("💪 Rutina completada", callback_data=f"ci:rutina:si:{semana}:{dia}"),
                 InlineKeyboardButton("🛏️ Descanso",          callback_data=f"ci:rutina:no:{semana}:{dia}"),
@@ -80,13 +85,13 @@ async def _enviar_checkin(bot, uid: int):
                 InlineKeyboardButton("🥗 Dieta en punto",    callback_data="ci:dieta:si"),
                 InlineKeyboardButton("📊 Hubo variación",    callback_data="ci:dieta:no"),
             ],
-        ])
+        ]
     else:
         texto = (
             "🌙 <b>Check-in — día de descanso</b>\n\n"
             "¿Cómo estuvo tu recuperación?"
         )
-        kb = InlineKeyboardMarkup([
+        rows = [
             [
                 InlineKeyboardButton("✅ Bien descansado",   callback_data=f"ci:rutina:descanso:{semana}:{dia}"),
                 InlineKeyboardButton("😓 Cansado igual",     callback_data=f"ci:rutina:cansado:{semana}:{dia}"),
@@ -95,7 +100,18 @@ async def _enviar_checkin(bot, uid: int):
                 InlineKeyboardButton("🥗 Comí bien",        callback_data="ci:dieta:si"),
                 InlineKeyboardButton("📊 Comí diferente",   callback_data="ci:dieta:no"),
             ],
+        ]
+
+    if pedir_sueño:
+        texto += "\n\n<i>Sin reloj conectado — dinos cuánto dormiste anoche</i>"
+        rows.append([
+            InlineKeyboardButton("😫 <6h",  callback_data="ci:sueño:5.5"),
+            InlineKeyboardButton("😐 6-7h", callback_data="ci:sueño:6.5"),
+            InlineKeyboardButton("✅ 7-8h", callback_data="ci:sueño:7.5"),
+            InlineKeyboardButton("🌟 8h+",  callback_data="ci:sueño:8.5"),
         ])
+
+    kb = InlineKeyboardMarkup(rows)
 
     await bot.send_message(
         chat_id=uid,
